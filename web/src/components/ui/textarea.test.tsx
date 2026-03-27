@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { describe, it, expect } from "vitest"
+import { render, fireEvent } from "@testing-library/react"
 import { Textarea } from "./textarea"
 import { AllProviders } from "@/test/utils"
 

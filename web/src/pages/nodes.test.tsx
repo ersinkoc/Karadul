@@ -956,7 +956,6 @@ describe("NodesPage - handleDelete with null nodeToDelete", () => {
   it("should not call delete when handleDelete is invoked with null nodeToDelete", async () => {
     // This test covers the `if (nodeToDelete)` branch in handleDelete
     const { NodesPage: NodesPageTest } = await import("./nodes")
-    const { toast } = await import("sonner")
 
     render(
       <AllProviders>
