@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { render, screen, fireEvent, waitFor } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { Header } from "./header"
 import { AllProviders } from "@/test/utils"
@@ -280,7 +280,7 @@ describe("Header - Dark theme icon", () => {
   it("should render Moon icon when theme is dark", async () => {
     const { Header: HeaderDark } = await import("./header")
 
-    const { container } = render(
+    render(
       <AllProviders>
         <HeaderDark />
       </AllProviders>
@@ -308,7 +308,7 @@ describe("Header - System theme icon", () => {
   it("should render Sun icon when theme is system", async () => {
     const { Header: HeaderSystem } = await import("./header")
 
-    const { container } = render(
+    render(
       <AllProviders>
         <HeaderSystem />
       </AllProviders>

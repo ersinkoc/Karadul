@@ -7,7 +7,7 @@ import { Settings } from "lucide-react"
 // Mock the tooltip component since it uses Radix UI with portals
 vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <div data-testid="tooltip">{children}</div>,
-  TooltipTrigger: ({ children, asChild }: { children: React.ReactNode; asChild?: boolean }) => (
+  TooltipTrigger: ({ children }: { children: React.ReactNode; asChild?: boolean }) => (
     <div data-testid="tooltip-trigger">{children}</div>
   ),
   TooltipContent: ({ children }: { children: React.ReactNode }) => (

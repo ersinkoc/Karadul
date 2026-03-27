@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, act, renderHook } from "@testing-library/react"
 import { ThemeProvider, useTheme } from "./theme-provider"
-import type { ReactNode } from "react"
+
 
 // Helper component to test the hook
 function ThemeConsumer() {

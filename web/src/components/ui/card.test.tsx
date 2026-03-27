@@ -33,7 +33,7 @@ describe("Card components", () => {
   })
 
   it("should render CardHeader", () => {
-    const { container } = render(
+    render(
       <AllProviders>
         <CardHeader>Header content</CardHeader>
       </AllProviders>
