@@ -108,7 +108,8 @@ export function TopologyPage() {
   useMemo(() => {
     setNodes(initialNodes)
     setEdges(initialEdges)
-  }, [initialNodes, initialEdges, setNodes, setEdges])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialNodes, initialEdges])
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     const selectedNode = nodes?.find((n) => n.id === node.id)

@@ -9,6 +9,7 @@ import {
   Search,
   RefreshCw,
   Download,
+  FileJson,
   FileSpreadsheet,
 } from "lucide-react"
 import {
@@ -157,7 +158,7 @@ export function PeersPage() {
                 Export as CSV
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => exportPeersJSON(peers || [])}>
-                <Download className="h-4 w-4 mr-2" />
+                <FileJson className="h-4 w-4 mr-2" />
                 Export as JSON
               </DropdownMenuItem>
             </DropdownMenuContent>

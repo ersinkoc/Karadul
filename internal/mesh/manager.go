@@ -23,7 +23,8 @@ type Manager struct {
 	log     *klog.Logger
 	connect ConnectFunc
 
-	done chan struct{}
+	done    chan struct{}
+	stopped chan struct{}
 }
 
 // NewManager creates a Manager.
@@ -34,13 +35,17 @@ func NewManager(log *klog.Logger, connect ConnectFunc) *Manager {
 		log:     log,
 		connect: connect,
 		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
 	}
 	go m.gcLoop()
 	return m
 }
 
-// Stop shuts down background goroutines.
-func (m *Manager) Stop() { close(m.done) }
+// Stop shuts down background goroutines and waits for them to finish.
+func (m *Manager) Stop() {
+	close(m.done)
+	<-m.stopped
+}
 
 // AddOrUpdate adds a peer from the topology update, or updates an existing one.
 func (m *Manager) AddOrUpdate(pubKey [32]byte, hostname, nodeID string, vip net.IP, endpoint string, routes []string) {
@@ -144,6 +149,7 @@ func (m *Manager) onStateChange(p *Peer, from, to PeerState) {
 
 // gcLoop periodically checks for idle/expired peers.
 func (m *Manager) gcLoop() {
+	defer close(m.stopped)
 	ticker := time.NewTicker(gcInterval)
 	defer ticker.Stop()
 	for {
