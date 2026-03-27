@@ -384,7 +384,7 @@ describe("WebSocketProvider - Connection handling", () => {
     })
 
     expect(result.current.error).toBe("WebSocket connection failed")
-    expect(wsInstance?.close).toHaveBeenCalled()
+    expect(wsInstance!.close).toHaveBeenCalled()
   })
 
   it("should handle WebSocket constructor throwing an error", async () => {

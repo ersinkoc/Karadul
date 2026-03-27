@@ -54,6 +54,7 @@ coverage.html
 !.github/**/*.json
 !web/package*.json
 !web/package-lock.json
+!web/tsconfig*.json
 
 # Log files
 *.log
