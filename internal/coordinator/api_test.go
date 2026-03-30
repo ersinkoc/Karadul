@@ -159,7 +159,7 @@ func TestVerifyRequestSignature_InvalidKey(t *testing.T) {
 	resp.Body.Close()
 
 	// Make a request with an invalid public key header (not 32 bytes when decoded)
-	body := []byte(`{"since_version": 0}`)
+	body := []byte(`{"sinceVersion": 0}`)
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/poll", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(headerKey, base64.StdEncoding.EncodeToString([]byte("short"))) // not 32 bytes
@@ -1617,7 +1617,7 @@ func TestPoll_InvalidJSON(t *testing.T) {
 	resp.Body.Close()
 
 	// Now poll with invalid JSON - the handler ignores unmarshal errors
-	invalidJSON := []byte(`{"since_version": invalid}`)
+	invalidJSON := []byte(`{"sinceVersion": invalid}`)
 	sig := SignRequest(testPubKey, http.MethodPost, "/api/v1/poll", invalidJSON)
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/poll", bytes.NewReader(invalidJSON))
 	req.Header.Set("Content-Type", "application/json")

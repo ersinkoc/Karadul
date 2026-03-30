@@ -38,9 +38,9 @@ type AuthKey struct {
 	ID        string    `json:"id"`
 	Key       string    `json:"key"`       // random secret the node presents
 	Ephemeral bool      `json:"ephemeral"` // single-use key
-	ExpiresAt time.Time `json:"expires_at"`
-	CreatedAt time.Time `json:"created_at"`
-	UsedAt    time.Time `json:"used_at,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	CreatedAt time.Time `json:"createdAt"`
+	UsedAt    time.Time `json:"usedAt,omitempty"`
 	Used      bool      `json:"used"`
 }
 
@@ -62,9 +62,9 @@ type ACLRule struct {
 type State struct {
 	Version   int        `json:"version"`
 	Nodes     []*Node    `json:"nodes"`
-	AuthKeys  []*AuthKey `json:"auth_keys"`
+	AuthKeys  []*AuthKey `json:"authKeys"`
 	ACL       ACLPolicy  `json:"acl"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
 // Store is a thread-safe in-memory state store backed by a JSON file.

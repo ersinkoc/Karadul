@@ -360,8 +360,8 @@ func runPeers(args []string) {
 
 	type peerInfo struct {
 		Hostname  string `json:"hostname"`
-		NodeID    string `json:"node_id"`
-		VirtualIP string `json:"virtual_ip"`
+		NodeID    string `json:"nodeId"`
+		VirtualIP string `json:"virtualIp"`
 		State     string `json:"state"`
 		Endpoint  string `json:"endpoint,omitempty"`
 	}
@@ -434,7 +434,7 @@ func runPing(args []string) {
 
 	var peers []struct {
 		Hostname  string `json:"hostname"`
-		VirtualIP string `json:"virtual_ip"`
+		VirtualIP string `json:"virtualIp"`
 		State     string `json:"state"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
@@ -505,24 +505,83 @@ func runPing(args []string) {
 // --- exit-node ---
 
 func runExitNode(args []string) {
-	if len(args) == 0 {
+	fs := flag.NewFlagSet("exit-node", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "data directory (for socket path)")
+	outIface := fs.String("out-interface", "", "outbound interface for exit node traffic (enable only)")
+	_ = fs.Parse(args)
+
+	// Remaining args after flags are the subcommand and its arguments.
+	remaining := fs.Args()
+	if len(remaining) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: karadul exit-node <enable|use <peer>>")
 		os.Exit(1)
 	}
-	switch args[0] {
+
+	switch remaining[0] {
 	case "enable":
-		fmt.Println("exit node enable — requires root; run 'karadul up --advertise-exit-node'")
-	case "use":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: karadul exit-node use <peer>")
+		iface := *outIface
+		if iface == "" {
+			iface = defaultOutInterface()
+		}
+		if iface == "" {
+			fmt.Fprintln(os.Stderr, "error: cannot determine default outbound interface; use --out-interface")
 			os.Exit(1)
 		}
-		fmt.Printf("routing all traffic through exit node %s\n", args[1])
-		fmt.Println("(pass --exit-node=<peer> to 'karadul up')")
+		body, err := localAPIPost(*dataDir, "/exit-node/enable", map[string]string{
+			"out_interface": iface,
+		})
+		fatalf(err, "enable exit node (is 'karadul up' running?)")
+		fmt.Printf("exit node enabled via %s\n", iface)
+		_ = body
+
+	case "use":
+		if len(remaining) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: karadul exit-node use <peer-hostname-or-vip>")
+			os.Exit(1)
+		}
+		peer := remaining[1]
+		body, err := localAPIPost(*dataDir, "/exit-node/use", map[string]string{
+			"peer": peer,
+		})
+		fatalf(err, "use exit node (is 'karadul up' running?)")
+		fmt.Printf("routing all traffic through exit node %s\n", peer)
+		_ = body
+
 	default:
-		fmt.Fprintf(os.Stderr, "unknown: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "unknown: %s\n", remaining[0])
 		os.Exit(1)
 	}
+}
+
+// defaultOutInterface tries to determine the default outbound network interface.
+func defaultOutInterface() string {
+	// Dial a public IP to discover which interface is used.
+	conn, err := net.Dial("udp4", "8.8.8.8:53")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ip, _, err := net.ParseCIDR(addr.String())
+			if err != nil {
+				continue
+			}
+			if ip.Equal(localAddr.IP) {
+				return iface.Name
+			}
+		}
+	}
+	return ""
 }
 
 // --- dns ---
@@ -540,7 +599,7 @@ func runDNS(args []string) {
 	}
 	type peerInfo struct {
 		Hostname  string `json:"hostname"`
-		VirtualIP string `json:"virtual_ip"`
+		VirtualIP string `json:"virtualIp"`
 	}
 	var peers []peerInfo
 	_ = json.Unmarshal(body, &peers)
@@ -644,7 +703,7 @@ func runAdminNodes(args []string) {
 		for _, n := range nodes {
 			fmt.Printf("%-20s %-15s %-10s %-10s\n",
 				strOrDash(n["hostname"]),
-				strOrDash(n["virtual_ip"]),
+				strOrDash(n["virtualIP"]),
 				strOrDash(n["status"]),
 				shortID(strOrDash(n["id"])),
 			)
@@ -699,7 +758,7 @@ func runAdminAuthKeys(args []string) {
 				strOrDash(k["id"]),
 				k["ephemeral"],
 				k["used"],
-				strOrDash(k["expires_at"]),
+				strOrDash(k["expiresAt"]),
 			)
 		}
 	case "create":
@@ -716,7 +775,7 @@ func runAdminAuthKeys(args []string) {
 		fmt.Printf("auth-key: %s\n", strOrDash(k["key"]))
 		fmt.Printf("id:       %s\n", strOrDash(k["id"]))
 		fmt.Printf("ephemeral: %v\n", k["ephemeral"])
-		if exp, ok := k["expires_at"]; ok && exp != nil && exp != "" {
+		if exp, ok := k["expiresAt"]; ok && exp != nil && exp != "" {
 			fmt.Printf("expires:  %v\n", exp)
 		}
 	case "delete":
@@ -907,6 +966,33 @@ func localAPIGet(dataDir, path string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	return io.ReadAll(resp.Body)
+}
+
+// localAPIPost sends a JSON-encoded payload to an endpoint on the node's local
+// Unix socket and returns the response body.
+func localAPIPost(dataDir, path string, payload interface{}) ([]byte, error) {
+	sockPath := filepath.Join(dataDir, "karadul.sock")
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode payload: %w", err)
+	}
+	resp, err := client.Post("http://karadul"+path, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("connect to node socket %s: %w", sockPath, err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return respBody, nil
 }
 
 func splitComma(s string) []string {

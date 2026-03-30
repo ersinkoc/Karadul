@@ -256,16 +256,16 @@ func (e *Engine) shutdown() error {
 // ─── Registration ─────────────────────────────────────────────────────────────
 
 type registerReq struct {
-	PublicKey  string   `json:"public_key"`
+	PublicKey  string   `json:"publicKey"`
 	Hostname   string   `json:"hostname"`
-	AuthKey    string   `json:"auth_key"`
+	AuthKey    string   `json:"authKey"`
 	Routes     []string `json:"routes,omitempty"`
-	IsExitNode bool     `json:"is_exit_node,omitempty"`
+	IsExitNode bool     `json:"isExitNode,omitempty"`
 }
 
 type registerResp struct {
-	NodeID    string `json:"node_id"`
-	VirtualIP string `json:"virtual_ip"`
+	NodeID    string `json:"nodeId"`
+	VirtualIP string `json:"virtualIp"`
 	Hostname  string `json:"hostname"`
 }
 
@@ -311,8 +311,8 @@ func (e *Engine) register(ctx context.Context) error {
 		return fmt.Errorf("invalid virtual IP %q", rr.VirtualIP)
 	}
 	e.log.Info("registered",
-		"node_id", rr.NodeID,
-		"virtual_ip", rr.VirtualIP,
+		"nodeId", rr.NodeID,
+		"virtualIp", rr.VirtualIP,
 		"hostname", rr.Hostname)
 	return nil
 }
@@ -409,7 +409,7 @@ func (e *Engine) pollLoop(ctx context.Context) {
 }
 
 func (e *Engine) poll(ctx context.Context, sinceVersion int64) (*coordinator.NetworkState, error) {
-	body, _ := json.Marshal(map[string]int64{"since_version": sinceVersion})
+	body, _ := json.Marshal(map[string]int64{"sinceVersion": sinceVersion})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		e.serverURL+"/api/v1/poll", bytes.NewReader(body))
 	if err != nil {
@@ -1050,6 +1050,8 @@ func (e *Engine) serveLocalAPI(ctx context.Context) {
 	mux.HandleFunc("/status", e.handleAPIStatus)
 	mux.HandleFunc("/peers", e.handleAPIPeers)
 	mux.HandleFunc("/metrics", e.handleAPIMetrics)
+	mux.HandleFunc("/exit-node/enable", e.handleAPIExitNodeEnable)
+	mux.HandleFunc("/exit-node/use", e.handleAPIExitNodeUse)
 
 	srv := &http.Server{Handler: mux}
 	_ = srv.Serve(ln)
@@ -1067,8 +1069,8 @@ func (e *Engine) handleAPIPeers(w http.ResponseWriter, _ *http.Request) {
 	peers := e.manager.ListPeers()
 	type peerInfo struct {
 		Hostname  string `json:"hostname"`
-		NodeID    string `json:"node_id"`
-		VirtualIP string `json:"virtual_ip"`
+		NodeID    string `json:"nodeId"`
+		VirtualIP string `json:"virtualIp"`
 		State     string `json:"state"`
 		Endpoint  string `json:"endpoint,omitempty"`
 	}
@@ -1089,6 +1091,80 @@ func (e *Engine) handleAPIPeers(w http.ResponseWriter, _ *http.Request) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(result)
+}
+
+func (e *Engine) handleAPIExitNodeEnable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		OutInterface string `json:"out_interface"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.OutInterface == "" {
+		http.Error(w, "missing out_interface", http.StatusBadRequest)
+		return
+	}
+
+	if err := e.EnableExitNode(req.OutInterface); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (e *Engine) handleAPIExitNodeUse(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Peer string `json:"peer"` // hostname or virtual IP
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.Peer == "" {
+		http.Error(w, "missing peer", http.StatusBadRequest)
+		return
+	}
+
+	// Look up peer by hostname first, then by VIP.
+	var peer *mesh.Peer
+	for _, p := range e.manager.ListPeers() {
+		if p.Hostname == req.Peer {
+			peer = p
+			break
+		}
+		if p.VirtualIP.String() == req.Peer {
+			peer = p
+			break
+		}
+	}
+	if peer == nil {
+		http.Error(w, "peer not found", http.StatusNotFound)
+		return
+	}
+
+	if err := e.UseExitNode(peer); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+		"peer":   peer.Hostname,
+	})
 }
 
 // ─── Automatic key rotation ──────────────────────────────────────────────────
@@ -1178,13 +1254,13 @@ func (e *Engine) LocalStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"node_id":    e.nodeID,
-		"virtual_ip": e.virtualIP.String(),
-		"public_key": e.kp.Public.String(),
-		"public_ep":  ep,
-		"sessions":   sessions,
-		"pending_hs": pending,
-		"peers":      peerInfo,
+		"nodeId":    e.nodeID,
+		"virtualIp": e.virtualIP.String(),
+		"publicKey": e.kp.Public.String(),
+		"publicEp":  ep,
+		"sessions":  sessions,
+		"pendingHs": pending,
+		"peers":     peerInfo,
 	}
 }
 

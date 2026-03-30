@@ -14,10 +14,10 @@ type PreAuthKey struct {
 	ID        string    `json:"id"`
 	Secret    string    `json:"secret"`
 	Ephemeral bool      `json:"ephemeral"`
-	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt,omitempty"`
 	Used      bool      `json:"used"`
-	UsedAt    time.Time `json:"used_at,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	UsedAt    time.Time `json:"usedAt,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // GeneratePreAuthKey creates a new random pre-auth key.

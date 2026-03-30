@@ -16,23 +16,23 @@ import (
 
 // RegisterRequest is the body of POST /api/v1/register.
 type RegisterRequest struct {
-	PublicKey  string   `json:"public_key"`
+	PublicKey  string   `json:"publicKey"`
 	Hostname   string   `json:"hostname"`
-	AuthKey    string   `json:"auth_key"`
+	AuthKey    string   `json:"authKey"`
 	Routes     []string `json:"routes,omitempty"`
-	IsExitNode bool     `json:"is_exit_node,omitempty"`
+	IsExitNode bool     `json:"isExitNode,omitempty"`
 }
 
 // RegisterResponse is the response of POST /api/v1/register.
 type RegisterResponse struct {
-	NodeID    string `json:"node_id"`
-	VirtualIP string `json:"virtual_ip"`
+	NodeID    string `json:"nodeId"`
+	VirtualIP string `json:"virtualIp"`
 	Hostname  string `json:"hostname"`
 }
 
 // PollRequest is the body of POST /api/v1/poll.
 type PollRequest struct {
-	SinceVersion int64 `json:"since_version"`
+	SinceVersion int64 `json:"sinceVersion"`
 }
 
 // UpdateEndpointRequest is the body of POST /api/v1/update-endpoint.
@@ -412,13 +412,13 @@ func (a *API) handleAdminACL(w http.ResponseWriter, r *http.Request) {
 // targetPubKey; here is my current endpoint". The server stores it and
 // signals the target via the poll mechanism.
 type ExchangeEndpointRequest struct {
-	TargetPubKey string `json:"target_pub_key"`
-	MyEndpoint   string `json:"my_endpoint"` // "ip:port" as seen by us
+	TargetPubKey string `json:"targetPubKey"`
+	MyEndpoint   string `json:"myEndpoint"` // "ip:port" as seen by us
 }
 
 // ExchangeEndpointResponse returns the target's last-known endpoint.
 type ExchangeEndpointResponse struct {
-	TargetEndpoint string `json:"target_endpoint"`
+	TargetEndpoint string `json:"targetEndpoint"`
 }
 
 // handleExchangeEndpoint handles POST /api/v1/exchange-endpoint.

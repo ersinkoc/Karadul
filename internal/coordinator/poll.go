@@ -13,10 +13,10 @@ const (
 // NetworkState is the snapshot sent to nodes during a poll response.
 type NetworkState struct {
 	Version   int64     `json:"version"`
-	UpdatedAt string    `json:"updated_at"`
+	UpdatedAt string    `json:"updatedAt"`
 	Nodes     []*Node   `json:"nodes"`
 	ACL       ACLPolicy `json:"acl"`
-	DERPMap   *DERPMap  `json:"derp_map,omitempty"`
+	DERPMap   *DERPMap  `json:"derpMap,omitempty"`
 }
 
 // DERPMap lists available DERP relay servers.
@@ -26,20 +26,20 @@ type DERPMap struct {
 
 // DERPRegion is a named group of DERP relay nodes.
 type DERPRegion struct {
-	RegionID   int         `json:"region_id"`
-	RegionCode string      `json:"region_code"`
-	RegionName string      `json:"region_name"`
+	RegionID   int         `json:"regionId"`
+	RegionCode string      `json:"regionCode"`
+	RegionName string      `json:"regionName"`
 	Nodes      []*DERPNode `json:"nodes"`
 }
 
 // DERPNode describes a single DERP relay endpoint.
 type DERPNode struct {
 	Name     string `json:"name"`
-	RegionID int    `json:"region_id"`
-	HostName string `json:"host_name"`
+	RegionID int    `json:"regionId"`
+	HostName string `json:"hostName"`
 	IPv4     string `json:"ipv4,omitempty"`
 	IPv6     string `json:"ipv6,omitempty"`
-	DERPPort int    `json:"derp_port"`
+	DERPPort int    `json:"derpPort"`
 }
 
 // Poller manages long-poll subscriptions.
