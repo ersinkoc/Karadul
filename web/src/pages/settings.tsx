@@ -8,6 +8,7 @@ import {
   Plus,
   RefreshCw,
   Clock,
+  Lock,
 } from "lucide-react"
 import {
   Card,
@@ -46,7 +47,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useAuthKeys, useCreateAuthKey, useDeleteAuthKey, useACL, useUpdateACL, useConfig, useUpdateConfig } from "@/lib/api"
+import { useAuthKeys, useCreateAuthKey, useDeleteAuthKey, useACL, useUpdateACL, useConfig, useUpdateConfig, getAdminToken, setAdminToken } from "@/lib/api"
 import type { ACLRule, ServerConfig } from "@/lib/api"
 import { formatDate, cn } from "@/lib/utils"
 import { ErrorAlert } from "@/components/error-boundary"
@@ -78,6 +79,7 @@ export function SettingsPage() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [aclRules, setAclRules] = useState<ACLRule[]>([])
   const [configForm, setConfigForm] = useState<ServerConfig>({})
+  const [adminToken, setLocalAdminToken] = useState(getAdminToken())
 
   // Sync config form from API data
   const configJson = JSON.stringify(configData)
@@ -609,6 +611,38 @@ export function SettingsPage() {
                   </Button>
                 </>
               )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Lock className="h-5 w-5" />
+                Admin Authentication
+              </CardTitle>
+              <CardDescription>
+                Enter the admin token if the server is configured with admin_secret.
+                This token is sent with all admin API requests.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-2">
+                <Label htmlFor="admin-token">Admin Token</Label>
+                <Input
+                  id="admin-token"
+                  type="password"
+                  value={adminToken}
+                  onChange={(e) => {
+                    setLocalAdminToken(e.target.value)
+                    setAdminToken(e.target.value)
+                  }}
+                  placeholder="Enter admin secret token"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Leave empty if the server has no admin_secret configured.
+                  The token is stored in your browser&apos;s local storage.
+                </p>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

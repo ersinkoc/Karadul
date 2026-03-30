@@ -7,6 +7,7 @@
     "log_level": "info",
     "log_format": "text",
     "rate_limit": 100,
+    "admin_secret": "",
     "tls": {
       "enabled": false,
       "self_signed": false,

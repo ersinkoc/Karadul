@@ -1,4 +1,4 @@
-.PHONY: build build-all test test-race test-cover clean install lint fmt vet help docker-build docker-compose-up release watch setup-homebrew ci web-test web-test-cover
+.PHONY: build build-all test test-race test-cover clean install lint fmt vet help docker-build docker-compose-up release watch setup-homebrew ci check-all web-test web-test-cover web-install web-dev web-build web-lint web-preview build-with-web
 
 # Build variables
 BINARY_NAME=karadul
@@ -113,7 +113,7 @@ watch: ## Watch GitHub Actions workflow
 setup-homebrew: ## Setup Homebrew tap
 	./scripts/setup-homebrew-tap.sh
 
-ci: fmt vet test-race build ## Run full CI pipeline
+ci: fmt vet test-race web-lint web-test web-build build ## Run full CI pipeline
 	@echo "✅ CI checks passed"
 
 # ==================== WEB UI ====================
@@ -133,7 +133,15 @@ web-build: ## Build web UI for production
 web-lint: ## Lint web UI code
 	cd $(WEB_DIR) && npm run lint
 
+web-test: ## Run web UI tests
+	cd $(WEB_DIR) && npm run test -- --run
+
+web-test-cover: ## Run web UI tests with coverage
+	cd $(WEB_DIR) && npm run test -- --run --coverage
+
 web-preview: ## Preview production build
 	cd $(WEB_DIR) && npm run preview
 
 build-with-web: web-build build ## Build with embedded web UI
+
+check-all: fmt vet test-race web-lint web-test ## Run all checks (Go + Web UI)
