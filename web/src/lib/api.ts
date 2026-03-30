@@ -224,3 +224,43 @@ export function useUpdateACL() {
     },
   })
 }
+
+// ==================== CONFIG ====================
+
+export interface ServerConfig {
+  addr?: string
+  tls?: { enabled?: boolean; cert_file?: string; key_file?: string; self_signed?: boolean }
+  approval_mode?: string
+  subnet?: string
+  data_dir?: string
+  log_level?: string
+  log_format?: string
+  rate_limit?: number
+}
+
+export function useConfig() {
+  return useQuery({
+    queryKey: ["config"],
+    queryFn: () => fetchApi<ServerConfig>("/v1/admin/config"),
+  })
+}
+
+export function useUpdateConfig() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (config: ServerConfig) => {
+      return fetchApi("/v1/admin/config", {
+        method: "PUT",
+        body: JSON.stringify(config),
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["config"] })
+      toast.success("Configuration saved successfully")
+    },
+    onError: (error: Error) => {
+      toast.error(`Failed to save config: ${error.message}`)
+    },
+  })
+}

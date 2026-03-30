@@ -37,6 +37,14 @@ vi.mock("@/lib/api", () => ({
     mutateAsync: vi.fn().mockResolvedValue(undefined),
     isPending: false,
   }),
+  useConfig: () => ({
+    data: { addr: ":8080", subnet: "100.64.0.0/10", approval_mode: "auto", log_level: "info", rate_limit: 100 },
+    isLoading: false,
+  }),
+  useUpdateConfig: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+  }),
 }))
 
 // Mock sonner toast
@@ -590,7 +598,7 @@ describe("SettingsPage - Tabs", () => {
     })
   })
 
-  it("should render network name input in General tab", async () => {
+  it("should render listen address input in General tab", async () => {
     render(
       <AllProviders>
         <SettingsPage />
@@ -601,11 +609,11 @@ describe("SettingsPage - Tabs", () => {
     await user.click(generalTab)
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/network name/i)).toBeInTheDocument()
+      expect(screen.getByLabelText(/listen address/i)).toBeInTheDocument()
     })
   })
 
-  it("should render coordinator URL input in General tab", async () => {
+  it("should render CGNAT subnet input in General tab", async () => {
     render(
       <AllProviders>
         <SettingsPage />
@@ -616,7 +624,7 @@ describe("SettingsPage - Tabs", () => {
     await user.click(generalTab)
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/coordinator url/i)).toBeInTheDocument()
+      expect(screen.getByLabelText(/cgnat subnet/i)).toBeInTheDocument()
     })
   })
 
@@ -645,6 +653,8 @@ describe("SettingsPage - Loading state", () => {
       useDeleteAuthKey: () => ({ mutateAsync: vi.fn(), isPending: false }),
       useACL: () => ({ data: { rules: [] }, isLoading: false, error: null }),
       useUpdateACL: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
+      useConfig: () => ({ data: null, isLoading: true }),
+      useUpdateConfig: () => ({ mutate: vi.fn(), isPending: false }),
     }))
     vi.doMock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
     vi.doMock("@/components/ui/select", () => ({
@@ -684,6 +694,8 @@ describe("SettingsPage - Error state", () => {
       useDeleteAuthKey: () => ({ mutateAsync: vi.fn(), isPending: false }),
       useACL: () => ({ data: { rules: [] }, isLoading: false, error: null }),
       useUpdateACL: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
+      useConfig: () => ({ data: null, isLoading: false }),
+      useUpdateConfig: () => ({ mutate: vi.fn(), isPending: false }),
     }))
     vi.doMock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
     vi.doMock("@/components/ui/select", () => ({

@@ -3,6 +3,7 @@ package coordinator
 import (
 	"encoding/json"
 	"net/http"
+	"runtime"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ type Hub struct {
 	unregister chan *Client
 	store      *Store
 	mu         sync.RWMutex
+	startTime  time.Time
 }
 
 // Client represents a WebSocket client
@@ -40,6 +42,7 @@ func NewHub(store *Store) *Hub {
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		store:      store,
+		startTime:  time.Now(),
 	}
 }
 
@@ -100,11 +103,14 @@ func (h *Hub) sendInitialState(client *Client) {
 	}
 
 	// Send stats
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
 	status := SystemStatus{
-		Uptime:         0,
-		MemoryUsage:    0,
+		Uptime:         int64(time.Since(h.startTime).Seconds()),
+		MemoryUsage:    int64(memStats.Sys),
 		CPUUsage:       0,
-		Goroutines:     0,
+		Goroutines:     runtime.NumGoroutine(),
 		PeersConnected: 0,
 		TotalRx:        0,
 		TotalTx:        0,
@@ -138,11 +144,14 @@ func (h *Hub) broadcastUpdate() {
 	}
 
 	// Broadcast stats
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
 	status := SystemStatus{
-		Uptime:         0,
-		MemoryUsage:    0,
+		Uptime:         int64(time.Since(h.startTime).Seconds()),
+		MemoryUsage:    int64(memStats.Sys),
 		CPUUsage:       0,
-		Goroutines:     0,
+		Goroutines:     runtime.NumGoroutine(),
 		PeersConnected: 0,
 		TotalRx:        0,
 		TotalTx:        0,

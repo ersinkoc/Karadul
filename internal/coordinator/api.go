@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -46,6 +47,7 @@ type API struct {
 	poller       *Poller
 	approvalMode string // "auto" or "manual"
 	cfg          *config.ServerConfig
+	startTime    time.Time
 }
 
 // NewAPI creates an API handler set.
@@ -56,6 +58,7 @@ func NewAPI(store *Store, pool *IPPool, poller *Poller, approvalMode string, cfg
 		poller:       poller,
 		approvalMode: approvalMode,
 		cfg:          cfg,
+		startTime:    time.Now(),
 	}
 }
 
@@ -77,6 +80,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/admin/acl", a.handleAdminACL)
 	mux.HandleFunc("/api/v1/admin/auth-keys", a.handleAdminAuthKeys)
 	mux.HandleFunc("/api/v1/admin/auth-keys/", a.handleAdminAuthKeys) // for DELETE /auth-keys/{id}
+	mux.HandleFunc("/api/v1/admin/config", a.handleAdminConfig)
 }
 
 // handleRegister handles POST /api/v1/register.
@@ -494,29 +498,46 @@ func (a *API) handleTopology(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nodes := a.store.ListNodes()
+	now := time.Now()
+	recentThreshold := 5 * time.Minute
 
-	// Build connections based on node endpoints
-	// In a real implementation, this would come from the mesh state
-	var connections []TopologyConnection
-	for i, n1 := range nodes {
-		if n1.Status != NodeStatusActive {
+	// Collect recently-seen active nodes.
+	type activeNode struct {
+		*Node
+		recent bool
+	}
+	var active []*activeNode
+	for _, n := range nodes {
+		if n.Status != NodeStatusActive {
 			continue
 		}
-		for j, n2 := range nodes {
-			if i >= j || n2.Status != NodeStatusActive {
+		recent := !n.LastSeen.IsZero() && now.Sub(n.LastSeen) < recentThreshold
+		active = append(active, &activeNode{Node: n, recent: recent})
+	}
+
+	// Build connections only between nodes that have been seen recently
+	// and have either exchanged endpoints or communicated.
+	var connections []TopologyConnection
+	for i, n1 := range active {
+		if !n1.recent {
+			continue
+		}
+		for j, n2 := range active {
+			if i >= j || !n2.recent {
 				continue
 			}
-			// Determine if direct connection is possible
+			// Determine connection type based on endpoint availability.
+			// Nodes that have both discovered each other's endpoints can
+			// communicate directly; otherwise they must relay through the
+			// coordinator.
 			connType := "relay"
 			if n1.Endpoint != "" && n2.Endpoint != "" {
-				// If both have endpoints, assume direct connection
 				connType = "direct"
 			}
 			connections = append(connections, TopologyConnection{
-				From:    n1.ID,
-				To:      n2.ID,
-				Type:    connType,
-				Latency: 0, // Would be measured in real implementation
+				From: n1.ID,
+				To:   n2.ID,
+				Type: connType,
 			})
 		}
 	}
@@ -547,20 +568,28 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	nodes := a.store.ListNodes()
 	activeCount := 0
+	var totalRx, totalTx int64
 	for _, n := range nodes {
 		if n.Status == NodeStatusActive {
 			activeCount++
 		}
+		// Node does not currently track per-node traffic counters;
+		// when the Node struct gains RxBytes/TxBytes fields they
+		// can be summed here.
+		_ = n
 	}
 
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
 	status := SystemStatus{
-		Uptime:         0, // Would be tracked in real implementation
-		MemoryUsage:    0,
-		CPUUsage:       0,
-		Goroutines:     0,
+		Uptime:         int64(time.Since(a.startTime).Seconds()),
+		MemoryUsage:    int64(memStats.Sys),
+		CPUUsage:       0, // accurate CPU usage requires cgo or external metrics
+		Goroutines:     runtime.NumGoroutine(),
 		PeersConnected: activeCount,
-		TotalRx:        0,
-		TotalTx:        0,
+		TotalRx:        totalRx,
+		TotalTx:        totalTx,
 	}
 
 	writeJSON(w, status)
@@ -574,16 +603,21 @@ func (a *API) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		var cfg config.ServerConfig
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
 		}
 		// Preserve TLS config from existing if not provided in update.
 		if cfg.TLS == (config.TLSConfig{}) {
-		cfg.TLS = a.cfg.TLS
-	}
+			cfg.TLS = a.cfg.TLS
+		}
 		*a.cfg = cfg
+		// Persist config to disk.
+		if a.cfg.DataDir != "" {
+			configPath := a.cfg.DataDir + "/config.json"
+			_ = config.SaveServerConfig(a.cfg, configPath)
+		}
 		writeJSON(w, cfg)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
+	}
 }

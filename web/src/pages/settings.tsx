@@ -46,8 +46,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useAuthKeys, useCreateAuthKey, useDeleteAuthKey, useACL, useUpdateACL } from "@/lib/api"
-import type { ACLRule } from "@/lib/api"
+import { useAuthKeys, useCreateAuthKey, useDeleteAuthKey, useACL, useUpdateACL, useConfig, useUpdateConfig } from "@/lib/api"
+import type { ACLRule, ServerConfig } from "@/lib/api"
 import { formatDate, cn } from "@/lib/utils"
 import { ErrorAlert } from "@/components/error-boundary"
 import { EmptyState } from "@/components/empty-state"
@@ -71,11 +71,22 @@ export function SettingsPage() {
   const deleteAuthKey = useDeleteAuthKey()
   const { data: aclData, isLoading: aclLoading, error: aclError } = useACL()
   const updateACL = useUpdateACL()
+  const { data: configData, isLoading: configLoading } = useConfig()
+  const updateConfig = useUpdateConfig()
   const [newKeyExpiresIn, setNewKeyExpiresIn] = useState<string>("")
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [aclRules, setAclRules] = useState<ACLRule[]>([])
+  const [configForm, setConfigForm] = useState<ServerConfig>({})
 
+  // Sync config form from API data
+  const configJson = JSON.stringify(configData)
+  useEffect(() => {
+    if (configData) {
+      setConfigForm(configData)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configJson])
   // Sync ACL rules from API data (only when rules actually change)
   const aclRulesJson = JSON.stringify(aclData?.rules)
   useEffect(() => {
@@ -503,22 +514,95 @@ export function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-2">
-                <Label htmlFor="network-name">Network Name</Label>
-                <Input
-                  id="network-name"
-                  placeholder="karadul"
-                  defaultValue="karadul"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="coord-url">Coordinator URL</Label>
-                <Input
-                  id="coord-url"
-                  placeholder="https://coord.example.com"
-                />
-              </div>
-              <Button>Save Changes</Button>
+              {configLoading ? (
+                <div className="space-y-3">
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                </div>
+              ) : (
+                <>
+                  <div className="grid gap-2">
+                    <Label htmlFor="listen-addr">Listen Address</Label>
+                    <Input
+                      id="listen-addr"
+                      value={configForm.addr || ""}
+                      onChange={(e) =>
+                        setConfigForm((prev) => ({ ...prev, addr: e.target.value }))
+                      }
+                      placeholder=":8080"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="subnet">CGNAT Subnet</Label>
+                    <Input
+                      id="subnet"
+                      value={configForm.subnet || ""}
+                      onChange={(e) =>
+                        setConfigForm((prev) => ({ ...prev, subnet: e.target.value }))
+                      }
+                      placeholder="100.64.0.0/10"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="approval-mode">Approval Mode</Label>
+                    <Select
+                      value={configForm.approval_mode || "auto"}
+                      onValueChange={(value) =>
+                        setConfigForm((prev) => ({ ...prev, approval_mode: value }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Auto-approve</SelectItem>
+                        <SelectItem value="manual">Manual approval</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="log-level">Log Level</Label>
+                    <Select
+                      value={configForm.log_level || "info"}
+                      onValueChange={(value) =>
+                        setConfigForm((prev) => ({ ...prev, log_level: value }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="debug">Debug</SelectItem>
+                        <SelectItem value="info">Info</SelectItem>
+                        <SelectItem value="warn">Warn</SelectItem>
+                        <SelectItem value="error">Error</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="rate-limit">Rate Limit (req/s, 0=disabled)</Label>
+                    <Input
+                      id="rate-limit"
+                      type="number"
+                      value={configForm.rate_limit ?? 100}
+                      onChange={(e) =>
+                        setConfigForm((prev) => ({
+                          ...prev,
+                          rate_limit: parseInt(e.target.value, 10) || 0,
+                        }))
+                      }
+                      placeholder="100"
+                    />
+                  </div>
+                  <Button
+                    onClick={() => updateConfig.mutate(configForm)}
+                    disabled={updateConfig.isPending}
+                  >
+                    {updateConfig.isPending ? "Saving..." : "Save Changes"}
+                  </Button>
+                </>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
