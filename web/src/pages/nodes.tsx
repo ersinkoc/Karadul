@@ -198,7 +198,7 @@ export function NodesPage() {
                     <TableHead>Hostname</TableHead>
                     <TableHead>Virtual IP</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead>Version</TableHead>
+                    <TableHead>Exit Node</TableHead>
                     <TableHead>Last Seen</TableHead>
                     <TableHead className="w-[50px]"></TableHead>
                   </TableRow>
@@ -259,7 +259,7 @@ export function NodesPage() {
                       <TableCell>
                         <StatusBadge status={node.status} />
                       </TableCell>
-                      <TableCell>{node.version || "Unknown"}</TableCell>
+                      <TableCell>{node.isExitNode ? "Yes" : "No"}</TableCell>
                       <TableCell>
                         {node.lastSeen
                           ? formatDate(node.lastSeen)
@@ -325,8 +325,8 @@ export function NodesPage() {
                   <div className="text-muted-foreground">Endpoint</div>
                   <div>{selectedNode.endpoint || "N/A"}</div>
 
-                  <div className="text-muted-foreground">OS</div>
-                  <div>{selectedNode.os || "Unknown"}</div>
+                  <div className="text-muted-foreground">Exit Node</div>
+                  <div>{selectedNode.isExitNode ? "Yes" : "No"}</div>
 
                   <div className="text-muted-foreground">Data Received</div>
                   <div>{formatBytes(selectedNode.rxBytes || 0)}</div>
@@ -334,14 +334,14 @@ export function NodesPage() {
                   <div className="text-muted-foreground">Data Sent</div>
                   <div>{formatBytes(selectedNode.txBytes || 0)}</div>
 
-                  {selectedNode.advertisedRoutes &&
-                    selectedNode.advertisedRoutes.length > 0 && (
+                  {selectedNode.routes &&
+                    selectedNode.routes.length > 0 && (
                       <>
                         <div className="text-muted-foreground">
                           Advertised Routes
                         </div>
                         <div>
-                          {selectedNode.advertisedRoutes.map((route) => (
+                          {selectedNode.routes.map((route) => (
                             <Badge
                               key={route}
                               variant="outline"

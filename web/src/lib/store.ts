@@ -7,11 +7,10 @@ export interface Node {
   publicKey: string
   status: "online" | "offline" | "pending"
   endpoint?: string
-  os?: string
-  version?: string
   lastSeen?: string
-  advertisedRoutes?: string[]
+  routes?: string[]
   isExitNode?: boolean
+  registeredAt?: string
   rxBytes?: number
   txBytes?: number
 }

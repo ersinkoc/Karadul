@@ -127,9 +127,11 @@ export function useStats() {
 export interface AuthKey {
   id: string
   key: string
-  createdAt: string
+  ephemeral: boolean
   expiresAt?: string
-  usedBy?: string
+  createdAt: string
+  usedAt?: string
+  used: boolean
 }
 
 export function useAuthKeys() {
@@ -191,11 +193,10 @@ export function useDeleteAuthKey() {
 // ==================== ACL ====================
 
 export interface ACLRule {
-  action: "accept" | "drop"
+  action: "allow" | "deny"
   src: string[]
   dst: string[]
-  proto?: string
-  dstPort?: string
+  ports?: string[]
 }
 
 export function useACL() {

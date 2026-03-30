@@ -63,8 +63,6 @@ func NewAPI(store *Store, pool *IPPool, poller *Poller, approvalMode string, cfg
 }
 
 // RegisterRoutes attaches all handlers to mux.
-
-// RegisterRoutes attaches all handlers to mux.
 func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/register", a.handleRegister)
 	mux.HandleFunc("/api/v1/poll", a.handlePoll)

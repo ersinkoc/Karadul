@@ -376,7 +376,7 @@ describe("NodesPage - Node Details", () => {
     }
   })
 
-  it("should display OS in details panel", async () => {
+  it("should display Exit Node in details panel", async () => {
     render(
       <AllProviders>
         <NodesPage />
@@ -390,7 +390,7 @@ describe("NodesPage - Node Details", () => {
       fireEvent.click(viewDetailsBtn)
 
       await waitFor(() => {
-        expect(screen.getByText("OS")).toBeInTheDocument()
+        expect(screen.getByText("Exit Node")).toBeInTheDocument()
       })
     }
   })
@@ -1065,7 +1065,7 @@ describe("NodesPage - Sparse data handling", () => {
     }
   })
 
-  it("should show Unknown for undefined os in details panel", async () => {
+  it("should show No for non-exit node in details panel", async () => {
     render(
       <AllProviders>
         <NodesPage />
@@ -1079,8 +1079,9 @@ describe("NodesPage - Sparse data handling", () => {
       fireEvent.click(viewDetailsBtn)
 
       await waitFor(() => {
-        // Should show Unknown for undefined OS
-        expect(screen.getByText("Unknown")).toBeInTheDocument()
+        // Should show No for non-exit node
+        const noElements = screen.getAllByText("No")
+        expect(noElements.length).toBeGreaterThanOrEqual(2)
       })
     }
   })
@@ -1168,7 +1169,7 @@ describe("NodesPage - Node without version or lastSeen", () => {
     nodesState.nodes = mockNodes
   })
 
-  it("should show Unknown for node without version", () => {
+  it("should show No for non-exit node", () => {
     render(
       <AllProviders>
         <NodesPage />
@@ -1176,9 +1177,9 @@ describe("NodesPage - Node without version or lastSeen", () => {
     )
 
     expect(screen.getByText("no-version-server")).toBeInTheDocument()
-    // Check for Unknown in the version column
-    const unknownElements = screen.getAllByText("Unknown")
-    expect(unknownElements.length).toBeGreaterThan(0)
+    // Check that No appears in the Exit Node column
+    const noElements = screen.getAllByText("No")
+    expect(noElements.length).toBeGreaterThan(0)
   })
 
   it("should show Never for node without lastSeen", () => {

@@ -100,7 +100,7 @@ export function SettingsPage() {
   const handleAddACLRule = () => {
     setAclRules((prev) => [
       ...prev,
-      { action: "accept", src: ["*"], dst: ["*"] },
+      { action: "allow", src: ["*"], dst: ["*"] },
     ])
   }
 
@@ -343,8 +343,8 @@ export function SettingsPage() {
                           )}
                         </TableCell>
                         <TableCell>
-                          {authKey.usedBy ? (
-                            <Badge>{authKey.usedBy}</Badge>
+                          {authKey.used ? (
+                            <Badge variant="outline">Used</Badge>
                           ) : (
                             <span className="text-muted-foreground">
                               Unused
@@ -430,8 +430,8 @@ export function SettingsPage() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="accept">Accept</SelectItem>
-                          <SelectItem value="drop">Drop</SelectItem>
+                          <SelectItem value="allow">Allow</SelectItem>
+                          <SelectItem value="deny">Deny</SelectItem>
                         </SelectContent>
                       </Select>
 

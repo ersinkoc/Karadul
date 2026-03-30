@@ -444,7 +444,7 @@ func (e *Engine) signRequest(req *http.Request, body []byte) {
 func (e *Engine) updateMagicDNS(nodes []*coordinator.Node) {
 	entries := make(map[string]net.IP, len(nodes))
 	for _, n := range nodes {
-		if n.Status == "active" {
+		if n.Status == coordinator.NodeStatusActive {
 			if ip := net.ParseIP(n.VirtualIP); ip != nil {
 				entries[n.Hostname] = ip
 			}

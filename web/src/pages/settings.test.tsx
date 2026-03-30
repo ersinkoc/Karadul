@@ -158,7 +158,7 @@ describe("SettingsPage - Rendering", () => {
     )
 
     expect(screen.getByText("Unused")).toBeInTheDocument()
-    expect(screen.getByText("node-1")).toBeInTheDocument()
+    expect(screen.getByText("Used")).toBeInTheDocument()
   })
 
   it("should have action buttons for keys", () => {
