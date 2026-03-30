@@ -249,10 +249,10 @@ karadul firewall check        # Check firewall configuration
 ## Documentation
 
 - [SPECIFICATION.md](SPECIFICATION.md) — Detailed technical specification
-- [Architecture Decision Records](contrib/adr/) — Design decisions and rationale
 - [Windows Beta Guide](contrib/WINDOWS_BETA_GUIDE.md) — Windows installation and usage
 - [Beta Release Checklist](contrib/BETA_RELEASE_CHECKLIST.md) — Post-release tasks
 - [Roadmap](ROADMAP.md) — Future plans and milestones
+- [Contributing](CONTRIBUTING.md) — How to contribute
 
 ---
 
@@ -264,8 +264,6 @@ If you find Karadul useful, please consider:
 - 🧪 [Test beta releases](https://github.com/karadul/karadul/releases)
 - 🐛 [Report bugs](../../issues)
 - 💻 [Contribute code](CONTRIBUTING.md)
-
-See [FUNDING.md](FUNDING.md) for sponsorship options.
 
 ---
 

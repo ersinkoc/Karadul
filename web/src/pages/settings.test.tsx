@@ -45,6 +45,8 @@ vi.mock("@/lib/api", () => ({
     mutate: vi.fn(),
     isPending: false,
   }),
+  getAdminToken: () => "",
+  setAdminToken: () => {},
 }))
 
 // Mock sonner toast
@@ -655,6 +657,8 @@ describe("SettingsPage - Loading state", () => {
       useUpdateACL: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
       useConfig: () => ({ data: null, isLoading: true }),
       useUpdateConfig: () => ({ mutate: vi.fn(), isPending: false }),
+      getAdminToken: () => "",
+      setAdminToken: () => {},
     }))
     vi.doMock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
     vi.doMock("@/components/ui/select", () => ({
@@ -696,6 +700,8 @@ describe("SettingsPage - Error state", () => {
       useUpdateACL: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
       useConfig: () => ({ data: null, isLoading: false }),
       useUpdateConfig: () => ({ mutate: vi.fn(), isPending: false }),
+      getAdminToken: () => "",
+      setAdminToken: () => {},
     }))
     vi.doMock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
     vi.doMock("@/components/ui/select", () => ({
