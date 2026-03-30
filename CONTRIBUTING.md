@@ -17,6 +17,9 @@ make test
 
 # Build the binary
 make build
+
+# Build web UI (required for embedded assets)
+make web-build
 ```
 
 ## Project Structure
@@ -36,7 +39,11 @@ make build
 │   ├── node/             # Node engine
 │   ├── protocol/         # Protocol definitions
 │   ├── relay/            # DERP relay server
-│   └── tunnel/           # TUN device management
+│   ├── tunnel/           # TUN device management
+│   └── web/              # Embedded web UI assets (built from web/)
+├── web/                  # Web UI source (React 19 + TypeScript)
+│   ├── src/              # React components, pages, and lib
+│   └── dist/             # Built assets (embedded via go:embed)
 ├── contrib/              # Additional resources
 └── SPECIFICATION.md      # Technical specification
 ```
@@ -52,7 +59,7 @@ make build
 ## Testing
 
 ```bash
-# Run all tests
+# Run all Go tests
 make test
 
 # Run tests with race detector
@@ -63,6 +70,12 @@ make test-cover
 
 # Generate HTML coverage report
 make test-cover-html
+
+# Run Web UI tests
+cd web && npm test
+
+# Run Web UI linting
+cd web && npm run lint
 ```
 
 ## Submitting Changes

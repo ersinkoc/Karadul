@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Web UI** — React 19 management dashboard
+  - Real-time topology visualization with React Flow
+  - Node and peer management pages
+  - System metrics dashboard (CPU, memory, goroutines, uptime)
+  - Settings page with ACL rules and auth key management
+  - WebSocket-based live updates (nodes, peers, topology, stats)
+  - Dark mode support
+- **CPU Usage Monitoring** — Pure Go CPU sampler (`internal/coordinator/cpu.go`)
+  - Uses `syscall.Getrusage` (no cgo required)
+  - 5-second sampling interval, exposed via `/api/v1/status` and WebSocket
+- **WebSocket Origin Validation** — Configurable CORS for WebSocket connections
+  - Same-origin only by default (matches Origin to Host header)
+  - Configurable allow-list via `allowed_origins` in server config
+  - Wildcard (`*`) support for development
+- **Rate Limiter Cleanup** — Periodic cleanup of stale token-bucket entries
+  - Prevents memory leak from accumulating per-IP buckets
+
+### Changed
+- `config.example.json` rewritten to match actual config struct fields
+- `.gitignore` consolidated with proper exclusions for web assets
+
 ## [0.1.0-beta.1] - 2026-03-26
 
 ### Added

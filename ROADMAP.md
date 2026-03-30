@@ -36,7 +36,8 @@ This document outlines the planned features and milestones for Karadul.
 
 - [ ] WireGuard key rotation
 - [ ] Certificate-based authentication
-- [ ] Web UI for server management
+- [x] Web UI for server management (dashboard, topology, nodes, peers, settings)
+- [x] Real-time WebSocket updates (topology, peers, stats)
 - [ ] Metrics and monitoring dashboard
 - [ ] Audit logging
 
