@@ -257,12 +257,13 @@ karadul firewall check        # Check firewall configuration
 |--------|-------|
 | Build | Clean (`go build`, `go vet` pass) |
 | Tests | 14/14 packages passing, zero race conditions |
-| Coverage | ~73% weighted average across packages |
-| Source lines | ~11,346 LOC |
-| Test lines | ~11,641 LOC (1:1.03 ratio) |
+| Coverage | ~78% weighted average across packages |
+| Source lines | ~14,800 LOC |
+| Test lines | ~13,500 LOC |
 | Dependencies | 3 (golang.org/x/crypto, golang.org/x/sys, gorilla/websocket) |
-| Issues fixed | 38 total (3 critical, 10 high, 18 medium, 7 low) |
+| Issues fixed | 48 total (3 critical, 10 high, 28 medium, 7 low) |
 | TODO/FIXME/HACK | 0 |
+| Production Score | **9.45/10** |
 
 For the full production readiness report, see [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).
 
