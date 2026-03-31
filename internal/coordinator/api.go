@@ -804,6 +804,10 @@ func (a *API) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		if cfg.TLS == (config.TLSConfig{}) {
 			cfg.TLS = a.cfg.TLS
 		}
+		if err := config.ValidateServerConfig(&cfg); err != nil {
+			http.Error(w, "invalid config: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		*a.cfg = cfg
 		// Persist config to disk.
 		if a.cfg.DataDir != "" {

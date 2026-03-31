@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -102,10 +103,8 @@ func VerifyRequestSignature(store *Store, r *http.Request, body []byte) error {
 	copy(pk[:], pubKeyBytes)
 	expected := crypto.HMAC(pk[:], msg)
 
-	for i := 0; i < 32; i++ {
-		if sigBytes[i] != expected[i] {
-			return fmt.Errorf("invalid signature")
-		}
+	if subtle.ConstantTimeCompare(sigBytes, expected[:]) != 1 {
+		return fmt.Errorf("invalid signature")
 	}
 	return nil
 }

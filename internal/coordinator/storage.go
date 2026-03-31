@@ -103,10 +103,18 @@ func (s *Store) Load() error {
 }
 
 // Save writes state to the JSON file atomically (write to tmp, rename).
+// Caller must NOT hold s.mu — this method acquires the write lock for the
+// full serialize + write cycle to prevent concurrent mutations from
+// producing an inconsistent on-disk snapshot.
 func (s *Store) Save() error {
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked()
+}
+
+// saveLocked writes state to disk. Must be called with s.mu held.
+func (s *Store) saveLocked() error {
 	data, err := json.MarshalIndent(s.state, "", "  ")
-	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
@@ -196,53 +204,50 @@ func (s *Store) GetNodeByPubKey(pubKey string) (*Node, bool) {
 // AddNode adds or replaces a node. Triggers state change notification.
 func (s *Store) AddNode(n *Node) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i, existing := range s.state.Nodes {
 		if existing.ID == n.ID {
 			s.state.Nodes[i] = n
 			s.state.UpdatedAt = time.Now()
 			s.version++
-			s.mu.Unlock()
 			s.notify()
-			return s.Save()
+			return s.saveLocked()
 		}
 	}
 	s.state.Nodes = append(s.state.Nodes, n)
 	s.state.UpdatedAt = time.Now()
 	s.version++
-	s.mu.Unlock()
 	s.notify()
-	return s.Save()
+	return s.saveLocked()
 }
 
 // UpdateNode applies a mutation function to a node by ID.
 func (s *Store) UpdateNode(id string, fn func(*Node)) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, n := range s.state.Nodes {
 		if n.ID == id {
 			fn(n)
 			s.state.UpdatedAt = time.Now()
-			s.mu.Unlock()
 			s.notify()
-			return s.Save()
+			return s.saveLocked()
 		}
 	}
-	s.mu.Unlock()
 	return fmt.Errorf("node %s not found", id)
 }
 
 // DeleteNode removes a node by ID.
 func (s *Store) DeleteNode(id string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i, n := range s.state.Nodes {
 		if n.ID == id {
 			s.state.Nodes = append(s.state.Nodes[:i], s.state.Nodes[i+1:]...)
 			s.state.UpdatedAt = time.Now()
-			s.mu.Unlock()
 			s.notify()
-			return s.Save()
+			return s.saveLocked()
 		}
 	}
-	s.mu.Unlock()
 	return fmt.Errorf("node %s not found", id)
 }
 
@@ -276,38 +281,36 @@ func (s *Store) GetAuthKey(secret string) (*AuthKey, bool) {
 // AddAuthKey persists a new auth key.
 func (s *Store) AddAuthKey(k *AuthKey) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.state.AuthKeys = append(s.state.AuthKeys, k)
-	s.mu.Unlock()
-	return s.Save()
+	return s.saveLocked()
 }
 
 // MarkAuthKeyUsed marks an ephemeral key as used.
 func (s *Store) MarkAuthKeyUsed(id string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, k := range s.state.AuthKeys {
 		if k.ID == id {
 			k.Used = true
 			k.UsedAt = time.Now()
-			s.mu.Unlock()
-			return s.Save()
+			return s.saveLocked()
 		}
 	}
-	s.mu.Unlock()
 	return fmt.Errorf("auth key %s not found", id)
 }
 
 // DeleteAuthKey removes an auth key by ID.
 func (s *Store) DeleteAuthKey(id string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	keys := s.state.AuthKeys
 	for i, k := range keys {
 		if k.ID == id {
 			s.state.AuthKeys = append(keys[:i], keys[i+1:]...)
-			s.mu.Unlock()
-			return s.Save()
+			return s.saveLocked()
 		}
 	}
-	s.mu.Unlock()
 	return fmt.Errorf("auth key %s not found", id)
 }
 
@@ -335,11 +338,11 @@ func (s *Store) GetACL() ACLPolicy {
 // SetACL replaces the ACL policy.
 func (s *Store) SetACL(acl ACLPolicy) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.state.ACL = acl
 	s.state.UpdatedAt = time.Now()
-	s.mu.Unlock()
 	s.notify()
-	return s.Save()
+	return s.saveLocked()
 }
 
 // Version returns the current state version (number of mutations since start).
