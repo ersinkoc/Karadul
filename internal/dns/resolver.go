@@ -54,6 +54,9 @@ type Resolver struct {
 
 	mu   sync.Mutex
 	conn *net.UDPConn
+
+	// Limit concurrent DNS handler goroutines.
+	sem chan struct{}
 }
 
 // NewResolver creates a Resolver.
@@ -65,6 +68,7 @@ func NewResolver(listenAddr, upstream string, magic *MagicDNS, log *klog.Logger)
 		upstream:   upstream,
 		magic:      magic,
 		log:        log,
+		sem:       make(chan struct{}, 128),
 	}
 }
 
@@ -92,7 +96,15 @@ func (r *Resolver) Start() error {
 		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
-		go r.handle(conn, src, pkt)
+		select {
+		case r.sem <- struct{}{}:
+			go func() {
+				r.handle(conn, src, pkt)
+				<-r.sem
+			}()
+		default:
+			// Too many concurrent queries; drop.
+		}
 	}
 }
 

@@ -112,6 +112,9 @@ type Engine struct {
 
 	// Buffer pool — reuse large slices for packet I/O
 	bufPool sync.Pool
+
+	// Semaphore to limit concurrent UDP packet handler goroutines.
+	udpSem chan struct{}
 }
 
 // NewEngine creates a node Engine from cfg and the pre-loaded key pair.
@@ -127,6 +130,7 @@ func NewEngine(cfg *config.NodeConfig, kp crypto.KeyPair, log *klog.Logger) *Eng
 		stopCh:    make(chan struct{}),
 		magic:     dns.NewMagicDNS(),
 		acl:       auth.NewEngine(auth.ACLPolicy{}), // default allow-all
+		udpSem:    make(chan struct{}, 256),
 		bufPool: sync.Pool{
 			New: func() interface{} {
 				b := make([]byte, protocol.MaxPacketSize)
@@ -650,7 +654,15 @@ func (e *Engine) udpReadLoop() {
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
 		e.bufPool.Put(bufp)
-		go e.handleUDPPacket(addr, pkt)
+		select {
+		case e.udpSem <- struct{}{}:
+			go func() {
+				e.handleUDPPacket(addr, pkt)
+				<-e.udpSem
+			}()
+		default:
+			// Semaphore full — drop packet to avoid goroutine explosion
+		}
 	}
 }
 
