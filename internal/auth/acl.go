@@ -124,6 +124,22 @@ func matchesPort(ports []string, port uint16) bool {
 
 // Validate checks the policy for structural errors.
 func (p *ACLPolicy) Validate() error {
+	// Validate groups contain valid CIDRs or plain IPs.
+	for gname, members := range p.Groups {
+		for _, m := range members {
+			if m == "*" {
+				continue
+			}
+			if strings.Contains(m, "/") {
+				if _, _, err := net.ParseCIDR(m); err != nil {
+					return fmt.Errorf("group %q: invalid CIDR %q", gname, m)
+				}
+			} else if net.ParseIP(m) == nil {
+				return fmt.Errorf("group %q: invalid IP %q", gname, m)
+			}
+		}
+	}
+
 	for i, rule := range p.Rules {
 		if rule.Action != "allow" && rule.Action != "deny" {
 			return fmt.Errorf("rule %d: action must be 'allow' or 'deny'", i)

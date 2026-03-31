@@ -297,6 +297,7 @@ func (a *API) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req PollRequest
+	// Body is optional; proceed with defaults if empty/bad JSON.
 	_ = json.Unmarshal(body, &req)
 
 	// Verify auth.
