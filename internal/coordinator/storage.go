@@ -69,6 +69,12 @@ type State struct {
 	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
+// StateFile is the on-disk format that includes the mutation version counter.
+type StateFile struct {
+	State
+	MutationVersion int64 `json:"mutationVersion"`
+}
+
 // Store is a thread-safe in-memory state store backed by a JSON file.
 type Store struct {
 	mu      sync.RWMutex
@@ -99,7 +105,13 @@ func (s *Store) Load() error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return json.NewDecoder(f).Decode(&s.state)
+	var sf StateFile
+	if err := json.NewDecoder(f).Decode(&sf); err != nil {
+		return err
+	}
+	s.state = sf.State
+	s.version = sf.MutationVersion
+	return nil
 }
 
 // Save writes state to the JSON file atomically (write to tmp, rename).
@@ -114,7 +126,11 @@ func (s *Store) Save() error {
 
 // saveLocked writes state to disk. Must be called with s.mu held.
 func (s *Store) saveLocked() error {
-	data, err := json.MarshalIndent(s.state, "", "  ")
+	sf := StateFile{
+		State:           s.state,
+		MutationVersion: s.version,
+	}
+	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		return err
 	}

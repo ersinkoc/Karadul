@@ -101,11 +101,16 @@ func (p *Peer) Transition(newState PeerState) {
 // Touch records that a packet was received from this peer.
 func (p *Peer) Touch() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	old := p.State
 	p.lastSeen = time.Now()
-	// Transition out of Idle if we were idle.
 	if p.State == PeerIdle {
 		p.State = PeerDirect
+	}
+	cb := p.onStateChange
+	p.mu.Unlock()
+
+	if cb != nil && old != PeerDirect {
+		cb(p, old, PeerDirect)
 	}
 }
 
@@ -144,11 +149,18 @@ func (p *Peer) IsExpired() bool {
 // IdleCheck transitions an active peer to Idle if it has not been heard from recently.
 func (p *Peer) IdleCheck() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	old := p.State
 	if (p.State == PeerDirect || p.State == PeerRelayed) && time.Since(p.lastSeen) > idleTimeout {
 		p.State = PeerIdle
 	}
 	if p.State == PeerIdle && time.Since(p.lastSeen) > expiredTimeout {
 		p.State = PeerExpired
+	}
+	newState := p.State
+	cb := p.onStateChange
+	p.mu.Unlock()
+
+	if cb != nil && old != newState {
+		cb(p, old, newState)
 	}
 }

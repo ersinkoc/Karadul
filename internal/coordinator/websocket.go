@@ -210,7 +210,10 @@ func (h *Hub) broadcastUpdate() {
 		"type": "nodes",
 		"data": nodes,
 	}); err == nil {
-		h.broadcast <- msg
+		select {
+		case h.broadcast <- msg:
+		default:
+		}
 	}
 
 	// Broadcast peers
@@ -219,7 +222,10 @@ func (h *Hub) broadcastUpdate() {
 		"type": "peers",
 		"data": peers,
 	}); err == nil {
-		h.broadcast <- msg
+		select {
+		case h.broadcast <- msg:
+		default:
+		}
 	}
 
 	// Broadcast topology
@@ -228,7 +234,10 @@ func (h *Hub) broadcastUpdate() {
 		"type": "topology",
 		"data": topology,
 	}); err == nil {
-		h.broadcast <- msg
+		select {
+		case h.broadcast <- msg:
+		default:
+		}
 	}
 
 	// Broadcast stats
@@ -253,7 +262,10 @@ func (h *Hub) broadcastUpdate() {
 		"type": "stats",
 		"data": status,
 	}); err == nil {
-		h.broadcast <- msg
+		select {
+		case h.broadcast <- msg:
+		default:
+		}
 	}
 }
 

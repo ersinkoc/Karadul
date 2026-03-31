@@ -43,9 +43,9 @@ const (
 type peerSession struct {
 	peer       *mesh.Peer
 	session    *Session
-	endpoint   *net.UDPAddr // nil = use DERP
-	receiverID uint32       // peer's local session ID (our message target)
-	localID    uint32       // our local session ID (peer sends this in data msgs)
+	endpoint   atomic.Pointer[net.UDPAddr] // nil = use DERP
+	receiverID uint32                      // peer's local session ID (our message target)
+	localID    uint32                      // our local session ID (peer sends this in data msgs)
 }
 
 // pendingHandshake tracks an in-progress initiator handshake.
@@ -92,7 +92,7 @@ type Engine struct {
 	serverURL string
 	nodeID    string
 	virtualIP net.IP
-	publicEP  *net.UDPAddr // our NAT-translated public endpoint
+	publicEP  atomic.Pointer[net.UDPAddr] // our NAT-translated public endpoint
 
 	// ACL
 	acl *auth.Engine
@@ -164,7 +164,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	if ep, err := e.discoverEndpoint(); err != nil {
 		e.log.Warn("stun discovery failed, will retry later", "err", err)
 	} else {
-		e.publicEP = ep
+		e.publicEP.Store(ep)
 		e.log.Info("stun: public endpoint", "addr", ep)
 		_ = e.reportEndpoint(ctx, ep.String())
 	}
@@ -375,8 +375,8 @@ func (e *Engine) endpointRefreshLoop(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			if ep, err := e.discoverEndpoint(); err == nil {
-				prevEP := e.publicEP
-				e.publicEP = ep
+				prevEP := e.publicEP.Load()
+				e.publicEP.Store(ep)
 				if prevEP == nil || ep.String() != prevEP.String() {
 					e.log.Info("endpoint changed", "addr", ep)
 					_ = e.reportEndpoint(ctx, ep.String())
@@ -548,7 +548,7 @@ func (e *Engine) tryUpgradeToDirect() {
 	e.mu.RLock()
 	var toUpgrade []*peerSession
 	for _, ps := range e.sessions {
-		if ps.endpoint == nil && ps.peer != nil {
+		if ps.endpoint.Load() == nil && ps.peer != nil {
 			// Currently relayed; try direct if endpoint is known.
 			if ps.peer.GetEndpoint() != nil {
 				toUpgrade = append(toUpgrade, ps)
@@ -715,7 +715,7 @@ func (e *Engine) sendToPeer(peer *mesh.Peer, packet []byte) error {
 	}).MarshalBinary()
 
 	// Prefer direct UDP; fall back to DERP.
-	ep := ps.endpoint
+	ep := ps.endpoint.Load()
 	if ep == nil {
 		ep = peer.GetEndpoint()
 	}
@@ -846,7 +846,7 @@ func (e *Engine) handleHandshakeInit(addr *net.UDPAddr, pkt []byte) {
 	if p, ok := e.manager.GetPeer(remoteKey); ok {
 		if addr != nil {
 			p.SetEndpoint(addr)
-			ps.endpoint = addr
+			ps.endpoint.Store(addr)
 		}
 		p.Transition(mesh.PeerDirect)
 		ps.peer = p
@@ -904,7 +904,7 @@ func (e *Engine) handleHandshakeResp(addr *net.UDPAddr, pkt []byte) {
 
 	if addr != nil {
 		ph.peer.SetEndpoint(addr)
-		ps.endpoint = addr
+		ps.endpoint.Store(addr)
 		ph.peer.Transition(mesh.PeerDirect)
 	} else {
 		ph.peer.Transition(mesh.PeerRelayed)
@@ -922,10 +922,10 @@ func (e *Engine) buildSession(remotePub crypto.Key, sendKey, recvKey [32]byte, l
 		session: NewSession(sendKey, recvKey, func() {
 			// Trigger re-key when session expires.
 		}),
-		endpoint:   ep,
 		localID:    localID,
 		receiverID: receiverID,
 	}
+	ps.endpoint.Store(ep)
 
 	e.mu.Lock()
 	e.sessions[remotePub] = ps
@@ -957,9 +957,9 @@ func (e *Engine) handleData(addr *net.UDPAddr, pkt []byte) {
 	if ps.peer != nil {
 		ps.peer.Touch()
 		// If we received a direct packet, update endpoint and upgrade state.
-		if addr != nil && ps.endpoint == nil {
+		if addr != nil && ps.endpoint.Load() == nil {
 			ps.peer.SetEndpoint(addr)
-			ps.endpoint = addr
+			ps.endpoint.Store(addr)
 			ps.peer.Transition(mesh.PeerDirect)
 		}
 	}
@@ -1284,8 +1284,8 @@ func (e *Engine) LocalStatus() map[string]interface{} {
 	}
 
 	ep := ""
-	if e.publicEP != nil {
-		ep = e.publicEP.String()
+	if pubEP := e.publicEP.Load(); pubEP != nil {
+		ep = pubEP.String()
 	}
 
 	return map[string]interface{}{

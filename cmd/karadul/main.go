@@ -432,6 +432,7 @@ func runStatus(args []string) {
 func runPing(args []string) {
 	fs := flag.NewFlagSet("ping", flag.ExitOnError)
 	count := fs.Int("c", 4, "number of pings")
+	dataDir := fs.String("data-dir", defaultDataDir(), "data directory")
 	_ = fs.Parse(args)
 	if fs.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: karadul ping <peer-hostname-or-vip>")
@@ -440,7 +441,7 @@ func runPing(args []string) {
 	target := fs.Arg(0)
 
 	// Try the local API socket first.
-	sockPath := defaultDataDir() + "/karadul.sock"
+	sockPath := *dataDir + "/karadul.sock"
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
@@ -871,7 +872,8 @@ func adminDoStatus(method, url string, payload []byte, expectStatus int) []byte 
 	if len(payload) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	fatalf(err, "connect to coordinator (is 'karadul server' running?)")
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -981,6 +983,7 @@ func newLogger(level, format string) *klog.Logger {
 func localAPIGet(dataDir, path string) ([]byte, error) {
 	sockPath := filepath.Join(dataDir, "karadul.sock")
 	client := &http.Client{
+		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
@@ -1000,6 +1003,7 @@ func localAPIGet(dataDir, path string) ([]byte, error) {
 func localAPIPost(dataDir, path string, payload interface{}) ([]byte, error) {
 	sockPath := filepath.Join(dataDir, "karadul.sock")
 	client := &http.Client{
+		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)

@@ -31,10 +31,11 @@ type Client struct {
 	pubKey    [32]byte
 	log       *klog.Logger
 
-	mu   sync.Mutex
-	conn net.Conn
-	rw   *bufio.ReadWriter
-	send chan sendItem
+	mu     sync.Mutex
+	conn   net.Conn
+	rw     *bufio.ReadWriter
+	send   chan sendItem
+	closed bool
 
 	onRecv RecvFunc
 }
@@ -183,6 +184,12 @@ func (c *Client) connect(ctx context.Context) error {
 		_ = tcpConn.SetReadDeadline(time.Now().Add(pingInterval * 2))
 		frame, err := ReadFrame(rw)
 		if err != nil {
+			c.mu.Lock()
+			if !c.closed {
+				close(c.send)
+				c.closed = true
+			}
+			c.mu.Unlock()
 			select {
 			case <-ctx.Done():
 				tcpConn.Close()
@@ -207,6 +214,12 @@ func (c *Client) connect(ctx context.Context) error {
 
 // SendPacket queues a packet to be sent to dst via the relay.
 func (c *Client) SendPacket(dst [32]byte, payload []byte) {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return
+	}
 	pkt := make([]byte, len(payload))
 	copy(pkt, payload)
 	select {

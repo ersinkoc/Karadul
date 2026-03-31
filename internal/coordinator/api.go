@@ -123,7 +123,19 @@ func (a *API) adminAuth() func(http.Handler) http.Handler {
 	}
 }
 
-// isValidPublicKey checks that s is a valid base64-encoded 32-byte key.
+// isValidID checks that s contains only safe characters (alphanumeric, hyphens).
+func isValidID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 func isValidPublicKey(s string) bool {
 	if s == "" {
 		return false
@@ -279,7 +291,11 @@ func (a *API) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(r.Body, 1024))
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
 	var req PollRequest
 	_ = json.Unmarshal(body, &req)
 
@@ -300,7 +316,11 @@ func (a *API) handleUpdateEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(r.Body, 1024))
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
 	if err := VerifyRequestSignature(a.store, r, body); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -438,7 +458,11 @@ func (a *API) handlePing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(r.Body, 1024))
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
 	if err := VerifyRequestSignature(a.store, r, body); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -463,8 +487,8 @@ func (a *API) handleAdminNodes(w http.ResponseWriter, r *http.Request) {
 	// POST /api/v1/admin/nodes/{id}/approve — approve a pending node.
 	if r.Method == http.MethodPost && strings.HasSuffix(path, "/approve") {
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/admin/nodes/"), "/approve")
-		if id == "" {
-			http.Error(w, "node id required", http.StatusBadRequest)
+		if id == "" || !isValidID(id) {
+			http.Error(w, "invalid node id", http.StatusBadRequest)
 			return
 		}
 		if err := a.store.UpdateNode(id, func(n *Node) {
@@ -483,8 +507,8 @@ func (a *API) handleAdminNodes(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		// DELETE /api/v1/admin/nodes/{id}
 		id := strings.TrimPrefix(path, "/api/v1/admin/nodes/")
-		if id == "" {
-			http.Error(w, "node id required", http.StatusBadRequest)
+		if id == "" || !isValidID(id) {
+			http.Error(w, "invalid node id", http.StatusBadRequest)
 			return
 		}
 		if err := a.store.DeleteNode(id); err != nil {
@@ -503,7 +527,11 @@ func (a *API) handleAdminACL(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, a.store.GetACL())
 	case http.MethodPut:
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 256*1024))
+		body, err := io.ReadAll(io.LimitReader(r.Body, 256*1024))
+		if err != nil {
+			http.Error(w, "read body", http.StatusBadRequest)
+			return
+		}
 		var acl ACLPolicy
 		if err := json.Unmarshal(body, &acl); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
@@ -539,7 +567,11 @@ func (a *API) handleExchangeEndpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	body, _ := io.ReadAll(io.LimitReader(r.Body, 1024))
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
 	if err := VerifyRequestSignature(a.store, r, body); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -584,8 +616,8 @@ func (a *API) handleAdminAuthKeys(w http.ResponseWriter, r *http.Request) {
 	// DELETE /api/v1/admin/auth-keys/{id}
 	if r.Method == http.MethodDelete {
 		id := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/auth-keys/")
-		if id == "" {
-			http.Error(w, "key id required", http.StatusBadRequest)
+		if id == "" || !isValidID(id) {
+			http.Error(w, "invalid key id", http.StatusBadRequest)
 			return
 		}
 		if err := a.store.DeleteAuthKey(id); err != nil {
@@ -600,7 +632,11 @@ func (a *API) handleAdminAuthKeys(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, a.store.ListAuthKeys())
 	case http.MethodPost:
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
+		body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+		if err != nil {
+			http.Error(w, "read body", http.StatusBadRequest)
+			return
+		}
 		var req CreateAuthKeyRequest
 		// Body is optional; proceed with defaults if empty / bad JSON.
 		_ = json.Unmarshal(body, &req)
@@ -631,6 +667,15 @@ func (a *API) handleAdminAuthKeys(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// readBody reads up to maxBytes from r.Body. Returns an error on failure.
+func readBody(r *http.Request, maxBytes int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	return body, nil
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
@@ -795,8 +840,13 @@ func (a *API) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, a.cfg)
 	case http.MethodPut:
+		body, err := io.ReadAll(io.LimitReader(r.Body, 256*1024))
+		if err != nil {
+			http.Error(w, "read body", http.StatusBadRequest)
+			return
+		}
 		var cfg config.ServerConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		if err := json.Unmarshal(body, &cfg); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}

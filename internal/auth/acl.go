@@ -134,6 +134,34 @@ func (p *ACLPolicy) Validate() error {
 		if len(rule.Dst) == 0 {
 			return fmt.Errorf("rule %d: dst is required", i)
 		}
+		for _, port := range rule.Ports {
+			if !isValidPort(port) {
+				return fmt.Errorf("rule %d: invalid port %q", i, port)
+			}
+		}
 	}
 	return nil
+}
+
+// isValidPort checks that a port spec is a valid number or range (e.g. "80", "443", "8080-8090").
+func isValidPort(s string) bool {
+	if s == "" || s == "*" {
+		return true
+	}
+	// Check for range (e.g. "8080-8090").
+	if idx := strings.IndexByte(s, '-'); idx >= 0 {
+		return isValidPortNum(s[:idx]) && isValidPortNum(s[idx+1:])
+	}
+	return isValidPortNum(s)
+}
+
+func isValidPortNum(s string) bool {
+	if s == "" {
+		return false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return false
+	}
+	return n >= 0 && n <= 65535
 }
