@@ -1242,6 +1242,9 @@ func (e *Engine) RekeyPeer(peer *mesh.Peer) {
 	e.log.Debug("rekeying", "peer", peer.Hostname)
 	// Remove old session so next packet triggers a fresh handshake.
 	e.mu.Lock()
+	if ps, ok := e.sessions[peer.PublicKey]; ok {
+		delete(e.byID, ps.localID)
+	}
 	delete(e.sessions, peer.PublicKey)
 	e.mu.Unlock()
 	go func() { _ = e.initiateHandshake(peer) }()

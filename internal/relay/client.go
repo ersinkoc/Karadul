@@ -93,6 +93,12 @@ func (c *Client) Run(ctx context.Context) {
 
 // connect dials the DERP server and serves frames until the connection drops.
 func (c *Client) connect(ctx context.Context) error {
+	// Reset send channel and closed flag for fresh reconnect.
+	c.mu.Lock()
+	c.send = make(chan sendItem, 256)
+	c.closed = false
+	c.mu.Unlock()
+
 	dialer := &net.Dialer{}
 	tcpConn, err := dialer.DialContext(ctx, "tcp", serverHost(c.serverURL))
 	if err != nil {

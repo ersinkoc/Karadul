@@ -157,7 +157,7 @@ func (r *Resolver) processQuery(pkt []byte) ([]byte, error) {
 	nameLower := strings.ToLower(name)
 
 	// Check if it's a magic DNS query.
-	if r.magic != nil && strings.HasSuffix(nameLower, "."+MagicDomain) || nameLower == MagicDomain {
+	if r.magic != nil && (strings.HasSuffix(nameLower, "."+MagicDomain) || nameLower == MagicDomain) {
 		hostname := strings.TrimSuffix(nameLower, "."+MagicDomain)
 		hostname = strings.TrimSuffix(hostname, ".")
 
