@@ -964,6 +964,258 @@ func TestPathName(t *testing.T) {
 	}
 }
 
+// ─── PacketDstPort IPv6 tests ────────────────────────────────────────────────
+
+func TestPacketDstPort_IPv6(t *testing.T) {
+	tests := []struct {
+		name string
+		pkt  []byte
+		want uint16
+	}{
+		{
+			name: "ipv6 tcp port 443",
+			pkt: func() []byte {
+				pkt := make([]byte, 60) // 40-byte IPv6 header + 20-byte TCP header
+				pkt[0] = 0x60           // version 6
+				pkt[6] = 6              // protocol = TCP
+				pkt[42] = 0x01          // dst port high byte (40+2)
+				pkt[43] = 0xBB          // 443 = 0x01BB
+				return pkt
+			}(),
+			want: 443,
+		},
+		{
+			name: "ipv6 udp port 5353",
+			pkt: func() []byte {
+				pkt := make([]byte, 48) // 40-byte IPv6 header + 8-byte UDP header
+				pkt[0] = 0x60
+				pkt[6] = 17             // protocol = UDP
+				pkt[42] = 0x14          // dst port high byte (40+2)
+				pkt[43] = 0xE9          // 5353 = 0x14E9
+				return pkt
+			}(),
+			want: 5353,
+		},
+		{
+			name: "ipv6 too short",
+			pkt: func() []byte {
+				pkt := make([]byte, 30)
+				pkt[0] = 0x60
+				return pkt
+			}(),
+			want: 0,
+		},
+		{
+			name: "ipv6 non tcp/udp (ICMPv6=58)",
+			pkt: func() []byte {
+				pkt := make([]byte, 48)
+				pkt[0] = 0x60
+				pkt[6] = 58 // ICMPv6
+				return pkt
+			}(),
+			want: 0,
+		},
+		{
+			name: "ipv4 ICMP proto",
+			pkt: func() []byte {
+				pkt := make([]byte, 28)
+				pkt[0] = 0x45
+				pkt[9] = 1 // ICMP
+				return pkt
+			}(),
+			want: 0,
+		},
+		{
+			name: "empty slice",
+			pkt:  []byte{},
+			want: 0,
+		},
+		{
+			name: "ipv4 IHL with options",
+			pkt: func() []byte {
+				// IHL=6 means 24-byte header (with options)
+				pkt := make([]byte, 32)
+				pkt[0] = 0x46 // version 4, IHL=6
+				pkt[9] = 6    // TCP
+				pkt[26] = 0   // dst port high
+				pkt[27] = 80  // dst port low
+				return pkt
+			}(),
+			want: 80,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := packetDstPort(tt.pkt)
+			if got != tt.want {
+				t.Errorf("packetDstPort() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// ─── Sign request edge-case tests ────────────────────────────────────────────
+
+func TestSignRequest_DifferentMethod(t *testing.T) {
+	e := testEngine(t)
+
+	req1, _ := http.NewRequest(http.MethodGet, "/api/v1/poll", nil)
+	req2, _ := http.NewRequest(http.MethodPost, "/api/v1/poll", nil)
+
+	e.signRequest(req1, []byte("body"))
+	e.signRequest(req2, []byte("body"))
+
+	sig1 := req1.Header.Get("X-Karadul-Sig")
+	sig2 := req2.Header.Get("X-Karadul-Sig")
+
+	if sig1 == sig2 {
+		t.Error("different methods should produce different signatures")
+	}
+}
+
+func TestSignRequest_DifferentURI(t *testing.T) {
+	e := testEngine(t)
+
+	req1, _ := http.NewRequest(http.MethodPost, "/api/v1/poll", nil)
+	req2, _ := http.NewRequest(http.MethodPost, "/api/v1/register", nil)
+
+	e.signRequest(req1, []byte("body"))
+	e.signRequest(req2, []byte("body"))
+
+	sig1 := req1.Header.Get("X-Karadul-Sig")
+	sig2 := req2.Header.Get("X-Karadul-Sig")
+
+	if sig1 == sig2 {
+		t.Error("different URIs should produce different signatures")
+	}
+}
+
+func TestSignRequest_NilBody(t *testing.T) {
+	e := testEngine(t)
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/poll", nil)
+	e.signRequest(req, nil)
+
+	sig := req.Header.Get("X-Karadul-Sig")
+	if sig == "" {
+		t.Error("nil body should still produce a valid signature")
+	}
+}
+
+func TestSignRequest_EmptyBody(t *testing.T) {
+	e := testEngine(t)
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/poll", nil)
+	e.signRequest(req, []byte{})
+
+	sig := req.Header.Get("X-Karadul-Sig")
+	if sig == "" {
+		t.Error("empty body should still produce a valid signature")
+	}
+}
+
+// ─── Metrics with active state tests ─────────────────────────────────────────
+
+func TestHandleAPIMetrics_WithActiveSessions(t *testing.T) {
+	e := testEngine(t)
+
+	// Build 2 sessions.
+	var pub1, pub2 [32]byte
+	pub1[0] = 1
+	pub2[0] = 2
+	e.buildSession(pub1, [32]byte{1}, [32]byte{2}, 100, 200, nil)
+	e.buildSession(pub2, [32]byte{3}, [32]byte{4}, 300, 400, nil)
+
+	// Add 1 pending handshake.
+	var pub3 [32]byte
+	pub3[0] = 3
+	peer := mesh.NewPeer(pub3, "pending-peer", "n3", net.ParseIP("100.64.0.5"))
+	localID := e.nextID()
+	e.mu.Lock()
+	e.pending[localID] = &pendingHandshake{
+		peer:    peer,
+		localID: localID,
+		sentAt:  time.Now(),
+	}
+	e.mu.Unlock()
+
+	w := httptest.NewRecorder()
+	e.handleAPIMetrics(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	body := w.Body.String()
+	if !containsStr(body, "karadul_sessions_active 2") {
+		t.Errorf("expected sessions_active 2, got:\n%s", body)
+	}
+	if !containsStr(body, "karadul_handshakes_pending 1") {
+		t.Errorf("expected handshakes_pending 1, got:\n%s", body)
+	}
+}
+
+// ─── Exit node use additional tests ──────────────────────────────────────────
+
+func TestHandleAPIExitNodeUse_MissingPeer(t *testing.T) {
+	e := testEngine(t)
+
+	w := httptest.NewRecorder()
+	e.handleAPIExitNodeUse(w, httptest.NewRequest(http.MethodPost, "/exit-node/use",
+		strings.NewReader(`{"peer":""}`)))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleAPIExitNodeUse_InvalidJSON(t *testing.T) {
+	e := testEngine(t)
+
+	w := httptest.NewRecorder()
+	e.handleAPIExitNodeUse(w, httptest.NewRequest(http.MethodPost, "/exit-node/use",
+		strings.NewReader("not json")))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// ─── Shutdown additional tests ───────────────────────────────────────────────
+
+func TestHandleAPIShutdown_WrongMethod(t *testing.T) {
+	e := testEngine(t)
+
+	cancelled := false
+	ctx, cancel := context.WithCancel(context.Background())
+	e.ctx = ctx
+	e.cancel = func() {
+		cancel()
+		cancelled = true
+	}
+
+	w := httptest.NewRecorder()
+	e.handleAPIShutdown(w, httptest.NewRequest(http.MethodGet, "/shutdown", nil))
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status: got %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+	if cancelled {
+		t.Error("cancel should not be called on GET")
+	}
+	cancel() // cleanup
+}
+
+func TestHandleAPIShutdown_NilCancel(t *testing.T) {
+	e := testEngine(t)
+	e.ctx = context.Background()
+	// e.cancel is nil by default
+
+	w := httptest.NewRecorder()
+	e.handleAPIShutdown(w, httptest.NewRequest(http.MethodPost, "/shutdown", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status: got %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
 // ─── Helper ──────────────────────────────────────────────────────────────────
 
 func containsStr(s, substr string) bool {

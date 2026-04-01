@@ -158,3 +158,83 @@ func TestAllowPort_PortZero(t *testing.T) {
 func TestRemovePort_PortZero(t *testing.T) {
 	_ = RemovePort(0, "tcp")
 }
+
+// ---------------------------------------------------------------------------
+// Port boundary tests
+// ---------------------------------------------------------------------------
+
+func TestAllowPort_NegativePort(t *testing.T) {
+	// Should not panic on negative port.
+	_ = AllowPort(-1, "tcp")
+}
+
+func TestRemovePort_NegativePort(t *testing.T) {
+	_ = RemovePort(-1, "tcp")
+}
+
+func TestAllowPort_LargePort(t *testing.T) {
+	// Port > 65535 is technically invalid. Verify no panic.
+	_ = AllowPort(99999, "tcp")
+}
+
+func TestRemovePort_LargePort(t *testing.T) {
+	_ = RemovePort(99999, "tcp")
+}
+
+// ---------------------------------------------------------------------------
+// RemovePort — uppercase protocols (mirrors AllowPort_UppercaseProtocol)
+// ---------------------------------------------------------------------------
+
+func TestRemovePort_UppercaseProtocol(t *testing.T) {
+	for _, proto := range []string{"TCP", "UDP"} {
+		t.Run(proto, func(t *testing.T) {
+			err := RemovePort(80, proto)
+			if err == nil {
+				return
+			}
+			msg := err.Error()
+
+			switch runtime.GOOS {
+			case "darwin", "linux":
+				if strings.Contains(msg, "unsupported protocol") {
+					t.Errorf("RemovePort(80, %q) on %s should not fail on protocol validation: %v", proto, runtime.GOOS, err)
+				}
+			case "windows":
+				if !strings.Contains(msg, "protocol must be 'tcp' or 'udp'") {
+					t.Errorf("RemovePort(80, %q) on Windows should fail with protocol validation error, got: %v", proto, err)
+				}
+			default:
+				if strings.Contains(msg, "unsupported protocol") {
+					t.Errorf("RemovePort(80, %q) on %s should not fail with unsupported-protocol error: %v", proto, runtime.GOOS, err)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Setup / Remove / Check — no-root smoke tests
+// ---------------------------------------------------------------------------
+
+func TestSetup_FailsWithoutRoot(t *testing.T) {
+	err := Setup("")
+	// Without root, Setup should return a non-nil error on darwin/linux/windows.
+	// On BSD it returns "not implemented".
+	if err == nil {
+		t.Log("Setup succeeded (running as root or firewall already configured)")
+	}
+	// Key assertion: no panic.
+}
+
+func TestRemove_FailsWithoutRoot(t *testing.T) {
+	err := Remove()
+	if err == nil {
+		t.Log("Remove succeeded (running as root or no rules to remove)")
+	}
+}
+
+func TestCheck_WithoutRoot(t *testing.T) {
+	// Check returns bool; without root it typically returns false.
+	// On BSD stub it returns true. Either way, must not panic.
+	_ = Check()
+}
