@@ -524,12 +524,23 @@ func TestServer_VerifyFunc_RejectsUnregistered(t *testing.T) {
 	WriteFrame(rw, FrameClientInfo, rejectedKey[:])
 	rw.Flush()
 
-	// The server should close the connection. Verify by attempting to read.
+	// The server should send an error frame, then close the connection.
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	errFrame, err := ReadFrame(rw)
+	if err != nil {
+		t.Fatalf("expected error frame before close, got read error: %v", err)
+	}
+	if errFrame.Type != FrameError {
+		t.Fatalf("expected FrameError, got %d", errFrame.Type)
+	}
+	if string(errFrame.Payload) != "unauthorized: unknown public key" {
+		t.Fatalf("unexpected error payload: %q", string(errFrame.Payload))
+	}
+	// After the error frame, the connection should be closed.
 	buf := make([]byte, 1)
 	_, err = conn.Read(buf)
 	if err == nil {
-		t.Fatal("expected connection to be closed after VerifyFunc rejection")
+		t.Fatal("expected connection to be closed after error frame")
 	}
 
 	// Verify the client was never registered.
@@ -653,6 +664,13 @@ func TestServer_VerifyFunc_RejectsUnknownKey(t *testing.T) {
 	rw.Flush()
 
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	errFrame, err := ReadFrame(rw)
+	if err != nil {
+		t.Fatalf("expected error frame before close, got read error: %v", err)
+	}
+	if errFrame.Type != FrameError {
+		t.Fatalf("expected FrameError, got %d", errFrame.Type)
+	}
 	buf := make([]byte, 1)
 	_, err = conn.Read(buf)
 	if err == nil {

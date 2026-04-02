@@ -109,6 +109,10 @@ func (s *Server) handleClient(conn net.Conn, rw *bufio.ReadWriter) {
 	// Verify client public key when VerifyFunc is configured.
 	if s.VerifyFunc != nil && !s.VerifyFunc(pubKey) {
 		s.log.Debug("derp: unregistered public key rejected", "key", fmt.Sprintf("%x", pubKey[:4]))
+		// Send error frame before closing so the client knows why.
+		_ = conn.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
+		_ = WriteFrame(rw, FrameError, []byte("unauthorized: unknown public key"))
+		_ = rw.Flush()
 		return
 	}
 

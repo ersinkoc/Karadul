@@ -19,6 +19,7 @@ const (
 	FramePeerGone    FrameType = 0x05 // peer disconnected
 	FramePing        FrameType = 0x06 // keepalive ping
 	FramePong        FrameType = 0x07 // keepalive pong
+	FrameError       FrameType = 0x08 // server → client: error message (UTF-8)
 )
 
 const (
