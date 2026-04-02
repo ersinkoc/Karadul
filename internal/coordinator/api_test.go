@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-		"path/filepath"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/karadul/karadul/internal/config"
 )
 
 // newTestAPI creates an API with a fresh in-memory store and returns
@@ -30,6 +32,35 @@ func newTestAPI(t *testing.T) (*API, *httptest.Server) {
 	}
 	poller := NewPoller(store)
 	api := NewAPI(store, pool, poller, "auto", nil)
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return api, ts
+}
+
+// newTestAPIWithSecret creates an API with an admin secret set for auth middleware tests.
+func newTestAPIWithSecret(t *testing.T, secret string) (*API, *httptest.Server) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := NewIPPool("100.64.0.0/10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	poller := NewPoller(store)
+	cfg := &config.ServerConfig{
+		Addr:         ":8080",
+		Subnet:       "100.64.0.0/10",
+		DataDir:      t.TempDir(),
+		ApprovalMode: "auto",
+		AdminSecret:  secret,
+	}
+	api := NewAPI(store, pool, poller, "auto", cfg)
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
@@ -659,6 +690,176 @@ func TestStore_SaveLoad(t *testing.T) {
 	nodes := s2.ListNodes()
 	if len(nodes) != 1 || nodes[0].ID != "n1" {
 		t.Fatalf("expected 1 node after reload, got %d", len(nodes))
+	}
+}
+
+// ─── Auth middleware tests ─────────────────────────────────────────────────────
+
+// TestAdminAuth_WithSecret verifies the adminAuth middleware enforces Bearer token
+// authentication on admin endpoints when AdminSecret is configured.
+func TestAdminAuth_WithSecret(t *testing.T) {
+	const secret = "test-admin-secret"
+	_, ts := newTestAPIWithSecret(t, secret)
+
+	tests := []struct {
+		name          string
+		authHeader    string
+		wantStatus    int
+	}{
+		{
+			name:       "no_auth_header",
+			authHeader: "",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "wrong_bearer_token",
+			authHeader: "Bearer wrong-token",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "correct_bearer_token",
+			authHeader: "Bearer test-admin-secret",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "wrong_scheme_basic",
+			authHeader: "Basic dXNlcjpwYXNz",
+			wantStatus: http.StatusUnauthorized,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/admin/nodes", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("want %d, got %d", tt.wantStatus, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestNodeOrAdminAuth_WithSecret verifies that protected GET endpoints (/peers,
+// /topology) require either a valid Bearer token or a node HMAC signature when
+// AdminSecret is configured.
+func TestNodeOrAdminAuth_WithSecret(t *testing.T) {
+	const secret = "test-admin-secret"
+	_, ts := newTestAPIWithSecret(t, secret)
+
+	tests := []struct {
+		name       string
+		authHeader string
+		wantStatus int
+	}{
+		{
+			name:       "no_auth",
+			authHeader: "",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "correct_bearer",
+			authHeader: "Bearer test-admin-secret",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "wrong_bearer",
+			authHeader: "Bearer wrong-token",
+			wantStatus: http.StatusUnauthorized,
+		},
+	}
+
+	endpoints := []string{"/api/v1/peers", "/api/v1/topology"}
+
+	for _, ep := range endpoints {
+		for _, tt := range tests {
+			t.Run(ep+"/"+tt.name, func(t *testing.T) {
+				req, err := http.NewRequest(http.MethodGet, ts.URL+ep, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tt.authHeader != "" {
+					req.Header.Set("Authorization", tt.authHeader)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != tt.wantStatus {
+					t.Errorf("want %d, got %d", tt.wantStatus, resp.StatusCode)
+				}
+			})
+		}
+	}
+}
+
+// TestHandlePoll_MethodNotAllowed verifies that GET to /poll returns 405.
+func TestHandlePoll_MethodNotAllowed(t *testing.T) {
+	_, ts := newTestAPI(t)
+	resp, err := http.Get(ts.URL + "/api/v1/poll")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("want 405, got %d", resp.StatusCode)
+	}
+}
+
+// TestHandleStatus_WithTraffic verifies that /status reports total RxBytes and
+// TxBytes accumulated from registered nodes.
+func TestHandleStatus_WithTraffic(t *testing.T) {
+	api, ts := newTestAPI(t)
+
+	// Seed two nodes with known traffic counters.
+	now := time.Now()
+	api.store.AddNode(&Node{
+		ID: "traffic-node-1", PublicKey: "pk-tn1", Hostname: "tn1",
+		VirtualIP: "100.64.0.100", Status: NodeStatusActive,
+		RxBytes: 1024, TxBytes: 2048,
+		RegisteredAt: now, LastSeen: now,
+	})
+	api.store.AddNode(&Node{
+		ID: "traffic-node-2", PublicKey: "pk-tn2", Hostname: "tn2",
+		VirtualIP: "100.64.0.101", Status: NodeStatusActive,
+		RxBytes: 4096, TxBytes: 8192,
+		RegisteredAt: now, LastSeen: now,
+	})
+
+	resp, err := http.Get(ts.URL + "/api/v1/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+
+	var status SystemStatus
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+
+	// TotalRx = 1024 + 4096 = 5120; TotalTx = 2048 + 8192 = 10240.
+	if status.TotalRx != 5120 {
+		t.Errorf("TotalRx: want 5120, got %d", status.TotalRx)
+	}
+	if status.TotalTx != 10240 {
+		t.Errorf("TotalTx: want 10240, got %d", status.TotalTx)
+	}
+	if status.PeersConnected != 2 {
+		t.Errorf("PeersConnected: want 2, got %d", status.PeersConnected)
 	}
 }
 

@@ -1226,3 +1226,226 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+// ─── Register tests ──────────────────────────────────────────────────────────
+
+func TestRegister_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/register" {
+			t.Errorf("request path: got %q, want /api/v1/register", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("request method: got %q, want POST", r.Method)
+		}
+
+		// Decode the register request to verify fields.
+		var req registerReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode register request: %v", err)
+		}
+		if req.Hostname != "test-node" {
+			t.Errorf("hostname: got %q, want %q", req.Hostname, "test-node")
+		}
+		if req.AuthKey != "test-auth-key" {
+			t.Errorf("authKey: got %q, want %q", req.AuthKey, "test-auth-key")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(registerResp{
+			NodeID:    "test-123",
+			VirtualIP: "100.64.0.1",
+			Hostname:  "test",
+		})
+	}))
+	defer srv.Close()
+
+	e := testEngine(t)
+	e.serverURL = srv.URL
+
+	err := e.register(context.Background())
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if e.nodeID != "test-123" {
+		t.Errorf("nodeID: got %q, want %q", e.nodeID, "test-123")
+	}
+	if e.virtualIP == nil || !e.virtualIP.Equal(net.ParseIP("100.64.0.1")) {
+		t.Errorf("virtualIP: got %v, want 100.64.0.1", e.virtualIP)
+	}
+}
+
+func TestRegister_Non200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	e := testEngine(t)
+	e.serverURL = srv.URL
+
+	err := e.register(context.Background())
+	if err == nil {
+		t.Fatal("expected error for non-200 response")
+	}
+
+	// Verify error message contains the status code.
+	if !containsStr(err.Error(), "status 403") {
+		t.Errorf("error should mention status 403, got: %v", err)
+	}
+}
+
+func TestRegister_InvalidVirtualIP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(registerResp{
+			NodeID:    "test",
+			VirtualIP: "not-an-ip",
+			Hostname:  "test",
+		})
+	}))
+	defer srv.Close()
+
+	e := testEngine(t)
+	e.serverURL = srv.URL
+
+	err := e.register(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid virtual IP")
+	}
+
+	if !containsStr(err.Error(), "invalid virtual IP") {
+		t.Errorf("error should mention invalid virtual IP, got: %v", err)
+	}
+}
+
+// ─── Poll tests ──────────────────────────────────────────────────────────────
+
+func TestPoll_Success(t *testing.T) {
+	wantVersion := int64(42)
+	wantHostname := "peer-a"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/poll" {
+			t.Errorf("request path: got %q, want /api/v1/poll", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("request method: got %q, want POST", r.Method)
+		}
+
+		// Verify signed headers are present.
+		if r.Header.Get("X-Karadul-Key") == "" {
+			t.Error("missing X-Karadul-Key header")
+		}
+		if r.Header.Get("X-Karadul-Sig") == "" {
+			t.Error("missing X-Karadul-Sig header")
+		}
+
+		// Decode request body to verify sinceVersion.
+		var reqBody map[string]int64
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode poll request: %v", err)
+		}
+		if reqBody["sinceVersion"] != 10 {
+			t.Errorf("sinceVersion: got %d, want 10", reqBody["sinceVersion"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(coordinator.NetworkState{
+			Version: wantVersion,
+			Nodes: []*coordinator.Node{
+				{
+					ID:        "peer-1",
+					Hostname:  wantHostname,
+					VirtualIP: "100.64.0.2",
+					Status:    coordinator.NodeStatusActive,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	e := testEngine(t)
+	e.serverURL = srv.URL
+
+	state, err := e.poll(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+
+	if state.Version != wantVersion {
+		t.Errorf("version: got %d, want %d", state.Version, wantVersion)
+	}
+	if len(state.Nodes) != 1 {
+		t.Fatalf("nodes count: got %d, want 1", len(state.Nodes))
+	}
+	if state.Nodes[0].Hostname != wantHostname {
+		t.Errorf("node hostname: got %q, want %q", state.Nodes[0].Hostname, wantHostname)
+	}
+	if state.Nodes[0].VirtualIP != "100.64.0.2" {
+		t.Errorf("node virtualIP: got %q, want %q", state.Nodes[0].VirtualIP, "100.64.0.2")
+	}
+}
+
+func TestPoll_Non200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	e := testEngine(t)
+	e.serverURL = srv.URL
+
+	_, err := e.poll(context.Background(), 0)
+	if err == nil {
+		t.Fatal("expected error for non-200 response")
+	}
+
+	if !containsStr(err.Error(), "status 500") {
+		t.Errorf("error should mention status 500, got: %v", err)
+	}
+}
+
+// ─── ReportEndpoint tests ───────────────────────────────────────────────────
+
+func TestReportEndpoint(t *testing.T) {
+	var receivedReq *http.Request
+	var receivedBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedReq = r
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		receivedBody = body
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	e := testEngine(t)
+	e.serverURL = srv.URL
+
+	err := e.reportEndpoint(context.Background(), "203.0.113.1:43210")
+	if err != nil {
+		t.Fatalf("reportEndpoint: %v", err)
+	}
+
+	// Verify the request went to the right path.
+	if receivedReq.URL.Path != "/api/v1/update-endpoint" {
+		t.Errorf("path: got %q, want /api/v1/update-endpoint", receivedReq.URL.Path)
+	}
+
+	// Verify signed headers are present.
+	if receivedReq.Header.Get("X-Karadul-Key") == "" {
+		t.Error("missing X-Karadul-Key header")
+	}
+	if receivedReq.Header.Get("X-Karadul-Sig") == "" {
+		t.Error("missing X-Karadul-Sig header")
+	}
+
+	// Verify the endpoint was included in the request body.
+	if receivedBody["endpoint"] != "203.0.113.1:43210" {
+		t.Errorf("endpoint in body: got %v, want %q", receivedBody["endpoint"], "203.0.113.1:43210")
+	}
+}
