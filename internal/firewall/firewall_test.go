@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -237,4 +238,160 @@ func TestCheck_WithoutRoot(t *testing.T) {
 	// Check returns bool; without root it typically returns false.
 	// On BSD stub it returns true. Either way, must not panic.
 	_ = Check()
+}
+
+// ---------------------------------------------------------------------------
+// Setup / Remove / Check — error message content
+// ---------------------------------------------------------------------------
+
+func TestSetup_ErrorContainsPfctl(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	err := Setup("")
+	if err == nil {
+		t.Skip("Setup succeeded (running as root)")
+	}
+	// Error should mention pfctl since the command will fail without root.
+	if !strings.Contains(err.Error(), "pfctl") {
+		t.Errorf("expected error to mention pfctl, got: %v", err)
+	}
+}
+
+func TestRemove_ErrorContainsPfctl(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	err := Remove()
+	if err == nil {
+		t.Log("Remove succeeded (no rules to flush)")
+		return
+	}
+	if !strings.Contains(err.Error(), "pfctl") {
+		t.Errorf("expected error to mention pfctl, got: %v", err)
+	}
+}
+
+func TestAllowPort_ErrorOnSystem(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	err := AllowPort(443, "tcp")
+	if err == nil {
+		t.Log("AllowPort succeeded (running as root)")
+		return
+	}
+	// Should NOT be a protocol validation error.
+	if strings.Contains(err.Error(), "unsupported protocol") {
+		t.Errorf("tcp should pass validation, got: %v", err)
+	}
+}
+
+func TestRemovePort_ErrorOnSystem(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	err := RemovePort(443, "tcp")
+	if err == nil {
+		t.Log("RemovePort succeeded (running as root)")
+		return
+	}
+	// Should NOT be a protocol validation error.
+	if strings.Contains(err.Error(), "unsupported protocol") {
+		t.Errorf("tcp should pass validation, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AllowPort / RemovePort — mixed case protocols
+// ---------------------------------------------------------------------------
+
+func TestAllowPort_MixedCaseProtocol(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	for _, proto := range []string{"Tcp", "Udp", "tCp", "uDp"} {
+		t.Run(proto, func(t *testing.T) {
+			err := AllowPort(8080, proto)
+			if err == nil {
+				return
+			}
+			// darwin lowercases, so mixed case should pass validation.
+			if strings.Contains(err.Error(), "unsupported protocol") {
+				t.Errorf("mixed case %q should pass validation on darwin, got: %v", proto, err)
+			}
+		})
+	}
+}
+
+func TestRemovePort_MixedCaseProtocol(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	for _, proto := range []string{"Tcp", "Udp"} {
+		t.Run(proto, func(t *testing.T) {
+			err := RemovePort(8080, proto)
+			if err == nil {
+				return
+			}
+			if strings.Contains(err.Error(), "unsupported protocol") {
+				t.Errorf("mixed case %q should pass validation on darwin, got: %v", proto, err)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// pfctl helper — error formatting
+// ---------------------------------------------------------------------------
+
+func TestPfctl_ErrorFormat(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	err := pfctl("-invalid-flag")
+	if err == nil {
+		t.Log("pfctl accepted invalid flag unexpectedly")
+		return
+	}
+	if !strings.Contains(err.Error(), "pfctl") {
+		t.Errorf("error should mention pfctl, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Check — return value type
+// ---------------------------------------------------------------------------
+
+func TestCheck_ReturnsBool(t *testing.T) {
+	// Just verify it returns a bool without panicking.
+	_ = Check()
+}
+
+// ---------------------------------------------------------------------------
+// RemovePort — with various ports (smoke)
+// ---------------------------------------------------------------------------
+
+func TestRemovePort_VariousPorts(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	ports := []int{22, 53, 80, 443, 8080}
+	for _, port := range ports {
+		t.Run(fmt.Sprintf("port_%d", port), func(t *testing.T) {
+			_ = RemovePort(port, "tcp")
+		})
+	}
+}
+
+func TestRemovePort_VariousPortsUDP(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only")
+	}
+	ports := []int{53, 123, 5353, 9999}
+	for _, port := range ports {
+		t.Run(fmt.Sprintf("port_%d", port), func(t *testing.T) {
+			_ = RemovePort(port, "udp")
+		})
+	}
 }

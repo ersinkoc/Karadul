@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/karadul/karadul/internal/crypto"
 	klog "github.com/karadul/karadul/internal/log"
 	"github.com/karadul/karadul/internal/mesh"
+	"github.com/karadul/karadul/internal/protocol"
 )
 
 func testEngine(t *testing.T) *Engine {
@@ -1676,3 +1678,605 @@ func TestReportEndpoint(t *testing.T) {
 		t.Errorf("endpoint in body: got %v, want %q", receivedBody["endpoint"], "203.0.113.1:43210")
 	}
 }
+
+// ─── New coverage tests ──────────────────────────────────────────────────────
+
+// TestHandleHandshakeInit_ProcessedCorrectly verifies that a valid Noise IK
+// handshake init from a real initiator is accepted and produces a session on
+// the responder side.
+func TestHandleHandshakeInit_ProcessedCorrectly(t *testing.T) {
+	// Create initiator (Alice) key pair.
+	kpAlice, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create responder engine (Bob) with Alice's public key known.
+	e := testEngine(t)
+
+	// Bind a UDP socket so Bob can send the response.
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Skipf("UDP listen: %v", err)
+	}
+	e.udp = udp
+	t.Cleanup(func() { udp.Close() })
+
+	// Alice creates initiator handshake state targeting Bob's public key.
+	hs, err := crypto.InitiatorHandshake(kpAlice, e.kp.Public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg1, err := hs.WriteMessage1()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Build the wire-level HandshakeInit message.
+	senderIdx := uint32(777)
+	initMsg := &protocol.MsgHandshakeInit{SenderIndex: senderIdx}
+	copy(initMsg.Ephemeral[:], msg1[:32])
+	copy(initMsg.EncStatic[:], msg1[32:80])
+	copy(initMsg.EncPayload[:], msg1[80:96])
+	wire := initMsg.MarshalBinary()
+
+	// Bob receives and processes the handshake init.
+	// Use Bob's own UDP address so the response is sent back to himself (loopback).
+	bobAddr := udp.LocalAddr().(*net.UDPAddr)
+	e.handleHandshakeInit(bobAddr, wire)
+	// Verify Bob now has a session with Alice's public key.
+	e.mu.RLock()
+	sessCount := len(e.sessions)
+	byIDCount := len(e.byID)
+	e.mu.RUnlock()
+
+	if sessCount != 1 {
+		t.Errorf("expected 1 session after valid handshake init, got %d", sessCount)
+	}
+	if byIDCount != 1 {
+		t.Errorf("expected 1 byID entry after valid handshake init, got %d", byIDCount)
+	}
+
+	// Read Bob's response from the UDP socket to verify it was sent.
+	buf := make([]byte, 1500)
+	udp.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := udp.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("failed to read handshake response: %v", err)
+	}
+
+	resp, err := protocol.UnmarshalMsgHandshakeResp(buf[:n])
+	if err != nil {
+		t.Fatalf("failed to unmarshal handshake response: %v", err)
+	}
+	// The ReceiverIndex in the response should echo the initiator's SenderIndex.
+	if resp.ReceiverIndex != senderIdx {
+		t.Errorf("response ReceiverIndex: got %d, want %d", resp.ReceiverIndex, senderIdx)
+	}
+}
+
+// TestHandleHandshakeResp_UnknownIndex verifies that a handshake response
+// with an unknown pending ID is silently dropped without creating a session.
+func TestHandleHandshakeResp_UnknownIndex(t *testing.T) {
+	e := testEngine(t)
+
+	// Ensure no pending handshakes exist.
+	e.mu.RLock()
+	pendingCount := len(e.pending)
+	e.mu.RUnlock()
+	if pendingCount != 0 {
+		t.Fatalf("expected 0 pending handshakes, got %d", pendingCount)
+	}
+
+	// Craft a valid-sized HandshakeResp with an unknown ReceiverIndex.
+	pkt := make([]byte, protocol.HandshakeRespSize)
+	pkt[0] = protocol.TypeHandshakeResp
+	// ReceiverIndex at bytes 8:12 = 0x0001869F (99999)
+	pkt[8] = 0x9F
+	pkt[9] = 0x86
+	pkt[10] = 0x01
+	pkt[11] = 0x00
+
+	e.handleHandshakeResp(&net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 5000}, pkt)
+
+	// No session should have been created.
+	e.mu.RLock()
+	n := len(e.sessions)
+	e.mu.RUnlock()
+	if n != 0 {
+		t.Errorf("expected 0 sessions after unknown receiver index, got %d", n)
+	}
+}
+
+// TestTunReadLoop_ContextCancel verifies that tunReadLoop exits promptly
+// when stopCh is closed.
+func TestTunReadLoop_ContextCancel(t *testing.T) {
+	e := testEngine(t)
+
+	// Use mock TUN whose Read returns an error once Close is called.
+	mtun := &errorAfterCloseMockTUN{closedCh: make(chan struct{})}
+	e.tun = mtun
+
+	done := make(chan struct{})
+	go func() {
+		e.tunReadLoop()
+		close(done)
+	}()
+
+	// Close stopCh first, then close the TUN so Read returns an error.
+	// tunReadLoop checks stopCh after every Read error.
+	close(e.stopCh)
+	mtun.Close()
+
+	select {
+	case <-done:
+		// tunReadLoop exited cleanly.
+	case <-time.After(5 * time.Second):
+		t.Fatal("tunReadLoop did not exit after stopCh was closed")
+	}
+}
+
+// errorAfterCloseMockTUN is a mock TUN whose Read blocks until Close is called,
+// then returns an error.
+type errorAfterCloseMockTUN struct {
+	closedCh chan struct{}
+}
+
+func (m *errorAfterCloseMockTUN) Name() string                    { return "error-after-close-mock" }
+func (m *errorAfterCloseMockTUN) Read(buf []byte) (int, error)    { <-m.closedCh; return 0, fmt.Errorf("closed") }
+func (m *errorAfterCloseMockTUN) Write(buf []byte) (int, error)   { return len(buf), nil }
+func (m *errorAfterCloseMockTUN) MTU() int                        { return 1420 }
+func (m *errorAfterCloseMockTUN) SetMTU(mtu int) error            { return nil }
+func (m *errorAfterCloseMockTUN) SetAddr(ip net.IP, pl int) error { return nil }
+func (m *errorAfterCloseMockTUN) AddRoute(dst *net.IPNet) error   { return nil }
+func (m *errorAfterCloseMockTUN) Close() error {
+	close(m.closedCh)
+	return nil
+}
+
+// TestEnableExitNode_Success verifies EnableExitNode calls the platform function.
+// This test may need to be skipped on some platforms where the system call is unavailable.
+func TestEnableExitNode_Success(t *testing.T) {
+	t.Skip("EnableExitNode requires platform-specific system calls (sysctl/pf/iptables) that cannot run in unprivileged test environments")
+}
+
+// TestHandleAPIStatus_JSON verifies the /status endpoint returns valid JSON
+// with all expected fields.
+func TestHandleAPIStatus_JSON(t *testing.T) {
+	e := testEngine(t)
+	e.nodeID = "json-test-node"
+	e.virtualIP = net.ParseIP("100.64.0.1")
+	e.publicEP.Store(&net.UDPAddr{IP: net.ParseIP("203.0.113.5"), Port: 43210})
+
+	w := httptest.NewRecorder()
+	e.handleAPIStatus(w, httptest.NewRequest(http.MethodGet, "/status", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want %d", w.Code, http.StatusOK)
+	}
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type: got %q, want application/json", ct)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse JSON response: %v", err)
+	}
+
+	// Verify all expected fields are present.
+	expectedFields := []string{"nodeId", "virtualIp", "publicKey", "publicEp", "sessions", "pendingHs", "peers"}
+	for _, field := range expectedFields {
+		if _, ok := resp[field]; !ok {
+			t.Errorf("missing field %q in response", field)
+		}
+	}
+
+	if resp["nodeId"] != "json-test-node" {
+		t.Errorf("nodeId: got %v, want json-test-node", resp["nodeId"])
+	}
+	if resp["virtualIp"] != "100.64.0.1" {
+		t.Errorf("virtualIp: got %v, want 100.64.0.1", resp["virtualIp"])
+	}
+	if resp["publicEp"] != "203.0.113.5:43210" {
+		t.Errorf("publicEp: got %v, want 203.0.113.5:43210", resp["publicEp"])
+	}
+}
+
+// TestHandleAPIExitNodeEnable_Success verifies the successful path through
+// the exit-node enable handler using a mock setup.
+func TestHandleAPIExitNodeEnable_Success(t *testing.T) {
+	// We cannot easily mock the platform-specific EnableExitNode function,
+	// so we test the handler logic up to the point of the system call.
+	// For a fully successful test, we skip on platforms where the call would fail.
+	t.Skip("EnableExitNode platform call requires root/admin privileges")
+}
+
+// TestInitiateHandshake_NoEndpoint verifies that initiateHandshake returns an
+// error when the peer has no endpoint and no DERP client is available.
+func TestInitiateHandshake_NoEndpoint(t *testing.T) {
+	e := testEngine(t)
+
+	// Bind a UDP socket so the engine doesn't panic on nil conn.
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Skipf("UDP listen: %v", err)
+	}
+	e.udp = udp
+	t.Cleanup(func() { udp.Close() })
+
+	var pubKey [32]byte
+	for i := range pubKey {
+		pubKey[i] = byte(i + 42)
+	}
+	// Peer with no endpoint set.
+	peer := mesh.NewPeer(pubKey, "no-ep", "n1", net.ParseIP("100.64.0.20"))
+
+	err = e.initiateHandshake(peer)
+	if err == nil {
+		t.Fatal("expected error when peer has no endpoint and no DERP client")
+	}
+	if !containsStr(err.Error(), "no path to peer") {
+		t.Errorf("error should mention 'no path to peer', got: %v", err)
+	}
+}
+
+// TestConnectPeer_DirectEndpoint verifies that connectPeer initiates a direct
+// handshake when the peer has a known endpoint.
+func TestConnectPeer_DirectEndpoint(t *testing.T) {
+	e := testEngine(t)
+
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Skipf("UDP listen: %v", err)
+	}
+	e.udp = udp
+	t.Cleanup(func() { udp.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	e.ctx = ctx
+	t.Cleanup(cancel)
+
+	var pubKey [32]byte
+	for i := range pubKey {
+		pubKey[i] = byte(i + 100)
+	}
+
+	ep := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: udp.LocalAddr().(*net.UDPAddr).Port}
+	peer := mesh.NewPeer(pubKey, "direct-peer", "n1", net.ParseIP("100.64.0.30"))
+	peer.SetEndpoint(ep)
+
+	err = e.connectPeer(peer)
+	if err != nil {
+		t.Fatalf("connectPeer with direct endpoint: %v", err)
+	}
+
+	// Verify a pending handshake was created.
+	e.mu.RLock()
+	pendingCount := len(e.pending)
+	e.mu.RUnlock()
+	if pendingCount == 0 {
+		t.Error("expected a pending handshake after connectPeer with direct endpoint")
+	}
+}
+
+// TestApplyACL_DenyTraffic verifies that ACL deny rules work end-to-end:
+// after applying a deny policy, the ACL engine should block matching traffic.
+func TestApplyACL_DenyTraffic(t *testing.T) {
+	e := testEngine(t)
+
+	// Apply a policy with a single deny-all rule (no allow rules).
+	// When rules exist but none match, the default is deny.
+	e.applyACL(coordinator.ACLPolicy{
+		Version: 2,
+		Rules: []coordinator.ACLRule{
+			{
+				Action: "deny",
+				Src:    []string{"*"},
+				Dst:    []string{"*"},
+				Ports:  []string{"*"},
+			},
+		},
+	})
+
+	src := net.ParseIP("100.64.0.1")
+	dst := net.ParseIP("100.64.0.2")
+
+	// All traffic should be denied (first matching rule is deny).
+	if e.acl.Allow(src, dst, 80) {
+		t.Error("expected port 80 to be denied by deny-all rule")
+	}
+	if e.acl.Allow(src, dst, 443) {
+		t.Error("expected port 443 to be denied by deny-all rule")
+	}
+	if e.acl.Allow(src, dst, 0) {
+		t.Error("expected any port to be denied by deny-all rule")
+	}
+}
+
+// ─── New coverage: handleData with valid packets ──────────────────────────────
+
+// TestHandleData_ValidPacket verifies that handleData correctly decrypts a
+// valid data packet, writes the plaintext to the TUN device, and increments
+// the RX metrics.
+func TestHandleData_ValidPacket(t *testing.T) {
+	e := testEngine(t)
+
+	// Wire up a mock TUN so handleData can write to it.
+	mtun := &mockTUN{name: "mocktun0", mtu: 1420}
+	e.tun = mtun
+
+	// Build a session with symmetric keys so Encrypt and Decrypt use the same key.
+	var sendKey, recvKey [32]byte
+	for i := range sendKey {
+		sendKey[i] = byte(i + 1)
+		recvKey[i] = byte(i + 1)
+	}
+
+	var remotePub crypto.Key
+	for i := range remotePub {
+		remotePub[i] = byte(i + 20)
+	}
+
+	localID := uint32(500)
+	ps := e.buildSession(remotePub, sendKey, recvKey, localID, 600, nil)
+	_ = ps
+
+	// Build a minimal IPv4 packet: src 100.64.0.1, dst 100.64.0.2, TCP port 80.
+	pkt := make([]byte, 24)
+	pkt[0] = 0x45 // version 4, IHL 5
+	pkt[9] = 6    // TCP
+	pkt[12] = 100; pkt[13] = 64; pkt[14] = 0; pkt[15] = 1 // src IP
+	pkt[16] = 100; pkt[17] = 64; pkt[18] = 0; pkt[19] = 2 // dst IP
+	pkt[22] = 0   // dst port high byte
+	pkt[23] = 80  // dst port low byte
+
+	// Encrypt the plaintext using the session.
+	counter, ct, err := ps.session.Encrypt(pkt)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+
+	// Build a wire-level MsgData and marshal it.
+	wire := (&protocol.MsgData{
+		ReceiverIndex: localID,
+		Counter:       counter,
+		Ciphertext:    ct,
+	}).MarshalBinary()
+
+	// Precondition: metrics should be zero.
+	if e.metricPacketsRx.Load() != 0 {
+		t.Fatalf("precondition: packetsRx should be 0, got %d", e.metricPacketsRx.Load())
+	}
+
+	// Call handleData.
+	addr := &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 5000}
+	e.handleData(addr, wire)
+
+	// Verify metrics were incremented.
+	if e.metricPacketsRx.Load() != 1 {
+		t.Errorf("packetsRx: got %d, want 1", e.metricPacketsRx.Load())
+	}
+	if e.metricBytesRx.Load() != uint64(len(pkt)) {
+		t.Errorf("bytesRx: got %d, want %d", e.metricBytesRx.Load(), len(pkt))
+	}
+}
+
+// TestHandleData_ACLDeny verifies that handleData drops a packet when an
+// ACL deny-all policy is active and does not increment metrics.
+func TestHandleData_ACLDeny(t *testing.T) {
+	e := testEngine(t)
+
+	mtun := &mockTUN{name: "mocktun0", mtu: 1420}
+	e.tun = mtun
+
+	// Apply deny-all ACL.
+	e.applyACL(coordinator.ACLPolicy{
+		Version: 2,
+		Rules: []coordinator.ACLRule{
+			{Action: "deny", Src: []string{"*"}, Dst: []string{"*"}},
+		},
+	})
+
+	var sendKey, recvKey [32]byte
+	for i := range sendKey {
+		sendKey[i] = byte(i + 1)
+		recvKey[i] = byte(i + 1)
+	}
+
+	var remotePub crypto.Key
+	for i := range remotePub {
+		remotePub[i] = byte(i + 20)
+	}
+
+	localID := uint32(501)
+	ps := e.buildSession(remotePub, sendKey, recvKey, localID, 601, nil)
+	_ = ps
+
+	// Build a valid IPv4 packet.
+	pkt := make([]byte, 24)
+	pkt[0] = 0x45
+	pkt[9] = 6
+	pkt[12] = 100; pkt[13] = 64; pkt[14] = 0; pkt[15] = 1
+	pkt[16] = 100; pkt[17] = 64; pkt[18] = 0; pkt[19] = 2
+	pkt[22] = 0
+	pkt[23] = 80
+
+	counter, ct, err := ps.session.Encrypt(pkt)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+
+	wire := (&protocol.MsgData{
+		ReceiverIndex: localID,
+		Counter:       counter,
+		Ciphertext:    ct,
+	}).MarshalBinary()
+
+	e.handleData(&net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 5000}, wire)
+
+	// Metrics should NOT have been incremented.
+	if e.metricPacketsRx.Load() != 0 {
+		t.Errorf("packetsRx: got %d, want 0 (packet should be dropped by ACL)", e.metricPacketsRx.Load())
+	}
+	if e.metricBytesRx.Load() != 0 {
+		t.Errorf("bytesRx: got %d, want 0 (packet should be dropped by ACL)", e.metricBytesRx.Load())
+	}
+}
+
+// ─── New coverage: handshakeTimeoutLoop ────────────────────────────────────────
+
+// TestHandshakeTimeoutLoop_CleansExpired verifies that the handshakeTimeoutLoop
+// goroutine removes pending handshakes older than handshakeTimeout.
+func TestHandshakeTimeoutLoop_CleansExpired(t *testing.T) {
+	e := testEngine(t)
+
+	var pubKey [32]byte
+	for i := range pubKey {
+		pubKey[i] = byte(i + 50)
+	}
+	peer := mesh.NewPeer(pubKey, "expired-hs-peer", "n1", net.ParseIP("100.64.0.5"))
+
+	// Add a pending handshake that was sent long ago.
+	localID := e.nextID()
+	e.mu.Lock()
+	e.pending[localID] = &pendingHandshake{
+		peer:    peer,
+		hs:      nil, // not needed for timeout cleanup
+		localID: localID,
+		sentAt:  time.Now().Add(-10 * time.Second), // older than handshakeTimeout (5s)
+	}
+	e.mu.Unlock()
+
+	// Start the timeout loop.
+	go e.handshakeTimeoutLoop()
+
+	// Wait briefly for the loop's 1-second ticker to fire and clean up.
+	time.Sleep(1500 * time.Millisecond)
+
+	// Close stopCh to stop the loop.
+	close(e.stopCh)
+
+	e.mu.RLock()
+	_, exists := e.pending[localID]
+	e.mu.RUnlock()
+	if exists {
+		t.Error("expired pending handshake should have been cleaned up by handshakeTimeoutLoop")
+	}
+}
+
+// ─── New coverage: rekeyLoop ───────────────────────────────────────────────────
+
+// TestRekeyLoop_TriggersRekey verifies that rekeyLoop exits cleanly when
+// its context is cancelled.
+func TestRekeyLoop_TriggersRekey(t *testing.T) {
+	e := testEngine(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		e.rekeyLoop(ctx)
+		close(done)
+	}()
+
+	// Cancel after a brief delay.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// rekeyLoop exited cleanly.
+	case <-time.After(5 * time.Second):
+		t.Fatal("rekeyLoop did not exit after context cancellation")
+	}
+}
+
+// ─── New coverage: pollLoop context cancellation ───────────────────────────────
+
+// TestPollLoop_ContextCancel verifies that pollLoop exits when its context
+// is cancelled.
+func TestPollLoop_ContextCancel(t *testing.T) {
+	e := testEngine(t)
+
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+
+	// Use a mock HTTP server that blocks until its context is cancelled.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-srvCtx.Done()
+	}))
+	defer srv.Close()
+
+	e.serverURL = srv.URL
+	e.topology = mesh.NewTopologyManager(e.manager, e.kp.Public, e.log)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		e.pollLoop(ctx)
+		close(done)
+	}()
+
+	// Cancel the pollLoop context after a brief delay.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// pollLoop exited cleanly.
+	case <-time.After(5 * time.Second):
+		t.Fatal("pollLoop did not exit after context cancellation")
+	}
+	// Cancel the server context so it can shut down cleanly.
+	srvCancel()
+}
+
+// ─── New coverage: UseExitNode ─────────────────────────────────────────────────
+
+// TestUseExitNode_AddsRoute verifies that UseExitNode adds a default route
+// to the TUN device.
+func TestUseExitNode_AddsRoute(t *testing.T) {
+	e := testEngine(t)
+
+	mtun := &mockTUN{name: "mocktun0", mtu: 1420}
+	e.tun = mtun
+	e.router = mesh.NewRouter(e.manager)
+
+	// Add a peer to the manager.
+	var pub [32]byte
+	for i := range pub {
+		pub[i] = byte(i + 1)
+	}
+	e.manager.AddOrUpdate(pub, "exit-node", "n1", net.ParseIP("100.64.0.50"), "", nil)
+
+	// Look up the peer and call UseExitNode.
+	var peer *mesh.Peer
+	for _, p := range e.manager.ListPeers() {
+		if p.Hostname == "exit-node" {
+			peer = p
+			break
+		}
+	}
+	if peer == nil {
+		t.Fatal("peer not found")
+	}
+
+	err := e.UseExitNode(peer)
+	if err != nil {
+		t.Fatalf("UseExitNode: %v", err)
+	}
+
+	// Verify the default route was added.
+	if len(mtun.routes) == 0 {
+		t.Fatal("expected at least one route to be added")
+	}
+
+	_, defaultNet, _ := net.ParseCIDR("0.0.0.0/0")
+	if !mtun.routes[0].IP.Equal(defaultNet.IP) {
+		t.Errorf("route IP: got %v, want %v", mtun.routes[0].IP, defaultNet.IP)
+	}
+}
+

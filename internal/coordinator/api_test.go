@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -2214,5 +2215,511 @@ func TestRegister_InvalidHostname(t *testing.T) {
 				t.Errorf("want 400 for %q, got %d", tt.hostname, resp.StatusCode)
 			}
 		})
+	}
+}
+
+// TestUpdateEndpoint_StoresTrafficCounters verifies that RxBytes and TxBytes are
+// persisted when a node updates its endpoint.
+func TestUpdateEndpoint_StoresTrafficCounters(t *testing.T) {
+	api, ts := newTestAPI(t)
+	registerTestNode(t, api, ts, testPubKeyB64, "traffic-node")
+
+	body, _ := json.Marshal(UpdateEndpointRequest{
+		Endpoint: "10.0.0.5:1234",
+		RxBytes:  4096,
+		TxBytes:  8192,
+	})
+	resp := signedDo(t, http.MethodPost, ts.URL+"/api/v1/update-endpoint", "/api/v1/update-endpoint", body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	node, ok := api.store.GetNodeByPubKey(testPubKeyB64)
+	if !ok {
+		t.Fatal("node not found")
+	}
+	if node.Endpoint != "10.0.0.5:1234" {
+		t.Errorf("endpoint: want 10.0.0.5:1234, got %q", node.Endpoint)
+	}
+	if node.RxBytes != 4096 {
+		t.Errorf("RxBytes: want 4096, got %d", node.RxBytes)
+	}
+	if node.TxBytes != 8192 {
+		t.Errorf("TxBytes: want 8192, got %d", node.TxBytes)
+	}
+}
+
+// TestExchangeEndpoint_TargetWithEndpoint verifies that exchange-endpoint returns
+// the target's endpoint when the target has one set.
+func TestExchangeEndpoint_TargetWithEndpoint(t *testing.T) {
+	api, ts := newTestAPI(t)
+
+	const aliceB64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" // [32]byte{}
+	const bobB64 = "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="   // [32]byte{0x0B, ...}
+
+	// Register Alice.
+	registerTestNode(t, api, ts, aliceB64, "alice")
+
+	// Register Bob.
+	ak, _ := GenerateAuthKey(false, 0)
+	addAuthKey(t, api, ak)
+	bobBody, _ := json.Marshal(RegisterRequest{
+		PublicKey: bobB64,
+		Hostname:  "bob",
+		AuthKey:   ak.Key,
+	})
+	r, _ := http.Post(ts.URL+"/api/v1/register", "application/json", bytes.NewReader(bobBody))
+	r.Body.Close()
+
+	// Set Bob's endpoint directly in the store.
+	bobNode, _ := api.store.GetNodeByPubKey(bobB64)
+	api.store.UpdateNode(bobNode.ID, func(n *Node) {
+		n.Endpoint = "192.168.1.100:4500"
+	})
+
+	// Alice exchanges endpoint targeting Bob.
+	var alice [32]byte
+	body, _ := json.Marshal(ExchangeEndpointRequest{
+		TargetPubKey: bobB64,
+		MyEndpoint:   "10.0.0.1:4000",
+	})
+	sig := SignRequest(alice, http.MethodPost, "/api/v1/exchange-endpoint", body)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/exchange-endpoint", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Karadul-Key", aliceB64)
+	req.Header.Set("X-Karadul-Sig", sig)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("exchange: want 200, got %d", resp.StatusCode)
+	}
+
+	var exResp ExchangeEndpointResponse
+	if err := json.NewDecoder(resp.Body).Decode(&exResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if exResp.TargetEndpoint != "192.168.1.100:4500" {
+		t.Errorf("target endpoint: want 192.168.1.100:4500, got %q", exResp.TargetEndpoint)
+	}
+}
+
+// TestAdminConfig_GetAndPut verifies GET returns current config and PUT updates it.
+func TestAdminConfig_GetAndPut(t *testing.T) {
+	cfg := &config.ServerConfig{
+		Addr:         ":9090",
+		Subnet:       "100.64.0.0/10",
+		DataDir:      t.TempDir(),
+		ApprovalMode: "auto",
+		AdminSecret:  "",
+	}
+	dir := t.TempDir()
+	store, _ := NewStore(filepath.Join(dir, "state.json"))
+	pool, _ := NewIPPool("100.64.0.0/10")
+	poller := NewPoller(store)
+	api := NewAPI(store, pool, poller, "auto", cfg)
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	// GET current config.
+	getResp, err := http.Get(ts.URL + "/api/v1/admin/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get config: want 200, got %d", getResp.StatusCode)
+	}
+	var gotCfg config.ServerConfig
+	if err := json.NewDecoder(getResp.Body).Decode(&gotCfg); err != nil {
+		t.Fatal(err)
+	}
+	if gotCfg.Addr != ":9090" {
+		t.Errorf("addr: want :9090, got %q", gotCfg.Addr)
+	}
+
+	// PUT new config.
+	newCfg := config.ServerConfig{
+		Addr:         ":7070",
+		Subnet:       "100.64.0.0/10",
+		DataDir:      cfg.DataDir,
+		ApprovalMode: "auto",
+	}
+	putBody, _ := json.Marshal(newCfg)
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/admin/config", bytes.NewReader(putBody))
+	req.Header.Set("Content-Type", "application/json")
+	putResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer putResp.Body.Close()
+	if putResp.StatusCode != http.StatusOK {
+		t.Fatalf("put config: want 200, got %d", putResp.StatusCode)
+	}
+
+	// Verify config was updated.
+	if cfg.Addr != ":7070" {
+		t.Errorf("config addr after PUT: want :7070, got %q", cfg.Addr)
+	}
+}
+
+// TestAdminConfig_MethodNotAllowed verifies that POST to /admin/config returns 405.
+func TestAdminConfig_MethodNotAllowed(t *testing.T) {
+	cfg := &config.ServerConfig{
+		Addr:         ":8080",
+		Subnet:       "100.64.0.0/10",
+		DataDir:      t.TempDir(),
+		ApprovalMode: "auto",
+	}
+	dir := t.TempDir()
+	store, _ := NewStore(filepath.Join(dir, "state.json"))
+	pool, _ := NewIPPool("100.64.0.0/10")
+	poller := NewPoller(store)
+	api := NewAPI(store, pool, poller, "auto", cfg)
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Post(ts.URL+"/api/v1/admin/config", "application/json", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("want 405, got %d", resp.StatusCode)
+	}
+}
+
+// TestAdminConfig_InvalidJSON verifies that PUT with malformed JSON returns 400.
+func TestAdminConfig_InvalidJSON(t *testing.T) {
+	cfg := &config.ServerConfig{
+		Addr:         ":8080",
+		Subnet:       "100.64.0.0/10",
+		DataDir:      t.TempDir(),
+		ApprovalMode: "auto",
+	}
+	dir := t.TempDir()
+	store, _ := NewStore(filepath.Join(dir, "state.json"))
+	pool, _ := NewIPPool("100.64.0.0/10")
+	poller := NewPoller(store)
+	api := NewAPI(store, pool, poller, "auto", cfg)
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/admin/config", bytes.NewReader([]byte("not-json")))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("want 400, got %d", resp.StatusCode)
+	}
+}
+
+// TestAdminConfig_InvalidConfig verifies that PUT with an invalid config returns 400.
+func TestAdminConfig_InvalidConfig(t *testing.T) {
+	cfg := &config.ServerConfig{
+		Addr:         ":8080",
+		Subnet:       "100.64.0.0/10",
+		DataDir:      t.TempDir(),
+		ApprovalMode: "auto",
+	}
+	dir := t.TempDir()
+	store, _ := NewStore(filepath.Join(dir, "state.json"))
+	pool, _ := NewIPPool("100.64.0.0/10")
+	poller := NewPoller(store)
+	api := NewAPI(store, pool, poller, "auto", cfg)
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	tests := []struct {
+		name string
+		cfg  config.ServerConfig
+	}{
+		{
+			name: "empty addr",
+			cfg:  config.ServerConfig{Addr: "", Subnet: "100.64.0.0/10", ApprovalMode: "auto"},
+		},
+		{
+			name: "bad approval_mode",
+			cfg:  config.ServerConfig{Addr: ":8080", Subnet: "100.64.0.0/10", ApprovalMode: "bogus"},
+		},
+		{
+			name: "bad subnet",
+			cfg:  config.ServerConfig{Addr: ":8080", Subnet: "not-a-cidr", ApprovalMode: "auto"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(tt.cfg)
+			req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/admin/config", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("want 400, got %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestResponseWriter_Flush verifies that Flush delegates to the underlying Flusher.
+func TestResponseWriter_Flush(t *testing.T) {
+	flusher := &mockFlusher{ResponseWriter: httptest.NewRecorder()}
+	rw := &responseWriter{ResponseWriter: flusher, code: http.StatusOK}
+
+	rw.Flush()
+
+	if !flusher.flushed {
+		t.Error("expected Flush to call underlying Flusher")
+	}
+}
+
+// mockFlusher is a test double that tracks whether Flush was called.
+type mockFlusher struct {
+	http.ResponseWriter
+	flushed bool
+}
+
+func (m *mockFlusher) Flush() {
+	m.flushed = true
+}
+
+// TestResponseWriter_Hijack verifies that Hijack delegates to the underlying Hijacker.
+func TestResponseWriter_Hijack(t *testing.T) {
+	hijacker := &mockHijacker{ResponseWriter: httptest.NewRecorder()}
+	t.Cleanup(func() { hijacker.Close() })
+	rw := &responseWriter{ResponseWriter: hijacker, code: http.StatusOK}
+
+	conn, buf, err := rw.Hijack()
+	if err != nil {
+		t.Fatalf("Hijack: %v", err)
+	}
+	if !hijacker.hijacked {
+		t.Error("expected Hijack to call underlying Hijacker")
+	}
+	if conn == nil {
+		t.Error("expected non-nil conn")
+	}
+	if buf == nil {
+		t.Error("expected non-nil buf")
+	}
+}
+
+// mockHijacker is a test double that implements http.Hijacker.
+type mockHijacker struct {
+	http.ResponseWriter
+	hijacked   bool
+	serverConn net.Conn
+	clientConn net.Conn
+}
+
+func (m *mockHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	m.hijacked = true
+	server, client := net.Pipe()
+	m.serverConn = server
+	m.clientConn = client
+	return server, bufio.NewReadWriter(bufio.NewReader(server), bufio.NewWriter(server)), nil
+}
+
+func (m *mockHijacker) Close() {
+	if m.serverConn != nil {
+		m.serverConn.Close()
+	}
+	if m.clientConn != nil {
+		m.clientConn.Close()
+	}
+}
+
+// ─── Topology endpoint tests ────────────────────────────────────────────────
+
+func TestHandleTopology_Empty(t *testing.T) {
+	_, ts := newTestAPI(t)
+	resp, err := http.Get(ts.URL + "/api/v1/topology")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var topo TopologyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&topo); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(topo.Nodes) != 0 {
+		t.Errorf("nodes: got %d, want 0", len(topo.Nodes))
+	}
+	if len(topo.Connections) != 0 {
+		t.Errorf("connections: got %d, want 0", len(topo.Connections))
+	}
+}
+
+func TestHandleTopology_DirectConnection(t *testing.T) {
+	api, ts := newTestAPI(t)
+	now := time.Now()
+	api.store.AddNode(&Node{
+		ID: "topo-1", PublicKey: "pk-t1", Hostname: "tn1",
+		VirtualIP: "100.64.0.10", Status: NodeStatusActive,
+		Endpoint: "10.0.0.1:4000", RegisteredAt: now, LastSeen: now,
+	})
+	api.store.AddNode(&Node{
+		ID: "topo-2", PublicKey: "pk-t2", Hostname: "tn2",
+		VirtualIP: "100.64.0.11", Status: NodeStatusActive,
+		Endpoint: "10.0.0.2:4000", RegisteredAt: now, LastSeen: now,
+	})
+	resp, err := http.Get(ts.URL + "/api/v1/topology")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var topo TopologyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&topo); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(topo.Nodes) != 2 {
+		t.Errorf("nodes: got %d, want 2", len(topo.Nodes))
+	}
+	if len(topo.Connections) != 1 {
+		t.Fatalf("connections: got %d, want 1", len(topo.Connections))
+	}
+	if topo.Connections[0].Type != "direct" {
+		t.Errorf("type: got %q, want %q", topo.Connections[0].Type, "direct")
+	}
+}
+
+func TestHandleTopology_RelayedConnection(t *testing.T) {
+	api, ts := newTestAPI(t)
+	now := time.Now()
+	api.store.AddNode(&Node{
+		ID: "topo-3", PublicKey: "pk-t3", Hostname: "tn3",
+		VirtualIP: "100.64.0.12", Status: NodeStatusActive,
+		Endpoint: "10.0.0.3:4000", RegisteredAt: now, LastSeen: now,
+	})
+	api.store.AddNode(&Node{
+		ID: "topo-4", PublicKey: "pk-t4", Hostname: "tn4",
+		VirtualIP: "100.64.0.13", Status: NodeStatusActive,
+		RegisteredAt: now, LastSeen: now,
+	})
+	resp, err := http.Get(ts.URL + "/api/v1/topology")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var topo TopologyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&topo); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(topo.Connections) != 1 {
+		t.Fatalf("connections: got %d, want 1", len(topo.Connections))
+	}
+	if topo.Connections[0].Type != "relay" {
+		t.Errorf("type: got %q, want %q", topo.Connections[0].Type, "relay")
+	}
+}
+
+func TestHandleTopology_PendingNodesExcluded(t *testing.T) {
+	api, ts := newTestAPI(t)
+	now := time.Now()
+	api.store.AddNode(&Node{
+		ID: "topo-5", PublicKey: "pk-t5", Hostname: "tn5",
+		VirtualIP: "100.64.0.14", Status: NodeStatusActive,
+		Endpoint: "10.0.0.5:4000", RegisteredAt: now, LastSeen: now,
+	})
+	api.store.AddNode(&Node{
+		ID: "topo-6", PublicKey: "pk-t6", Hostname: "tn6",
+		VirtualIP: "100.64.0.15", Status: NodeStatusPending,
+		Endpoint: "10.0.0.6:4000", RegisteredAt: now, LastSeen: now,
+	})
+	resp, err := http.Get(ts.URL + "/api/v1/topology")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var topo TopologyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&topo); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(topo.Connections) != 0 {
+		t.Errorf("connections: got %d, want 0", len(topo.Connections))
+	}
+}
+
+func TestHandleTopology_StaleNodesNoConnection(t *testing.T) {
+	api, ts := newTestAPI(t)
+	stale := time.Now().Add(-10 * time.Minute)
+	api.store.AddNode(&Node{
+		ID: "topo-7", PublicKey: "pk-t7", Hostname: "tn7",
+		VirtualIP: "100.64.0.16", Status: NodeStatusActive,
+		Endpoint: "10.0.0.7:4000", RegisteredAt: stale, LastSeen: stale,
+	})
+	api.store.AddNode(&Node{
+		ID: "topo-8", PublicKey: "pk-t8", Hostname: "tn8",
+		VirtualIP: "100.64.0.17", Status: NodeStatusActive,
+		Endpoint: "10.0.0.8:4000", RegisteredAt: stale, LastSeen: stale,
+	})
+	resp, err := http.Get(ts.URL + "/api/v1/topology")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var topo TopologyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&topo); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(topo.Connections) != 0 {
+		t.Errorf("connections: got %d, want 0 (stale nodes)", len(topo.Connections))
+	}
+}
+
+func TestHandleTopology_MethodNotAllowed(t *testing.T) {
+	_, ts := newTestAPI(t)
+	resp, err := http.Post(ts.URL+"/api/v1/topology", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("want 405, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandleAdminACL_ValidPortRange(t *testing.T) {
+	_, ts := newTestAPI(t)
+	policy := ACLPolicy{
+		Version: 1,
+		Rules: []ACLRule{
+			{Action: "allow", Src: []string{"*"}, Dst: []string{"*"}, Ports: []string{"80-443"}},
+		},
+	}
+	body, _ := json.Marshal(policy)
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/admin/acl", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("want 200 for valid port range, got %d", resp.StatusCode)
 	}
 }

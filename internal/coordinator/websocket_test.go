@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // ─── 1. TestBuildPeersFromNodes ────────────────────────────────────────────────
@@ -587,4 +590,768 @@ func TestPoller_WaitForUpdate_ImmediateReturn(t *testing.T) {
 	if state.Version == 0 {
 		t.Error("version should be non-zero after AddNode")
 	}
+}
+
+// ─── 11. TestHub_Run_StartsAndStops ───────────────────────────────────────────
+
+func TestHub_Run_StartsAndStops(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, nil, "")
+
+	done := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(done)
+	}()
+
+	// Give the event loop a moment to start.
+	time.Sleep(20 * time.Millisecond)
+
+	// Close should cause Run to exit.
+	hub.Close()
+
+	select {
+	case <-done:
+		// Success: Run exited.
+	case <-time.After(2 * time.Second):
+		t.Fatal("hub.Run() did not exit after Close()")
+	}
+}
+
+// ─── 12. TestHub_Run_DrainsClientsOnShutdown ──────────────────────────────────
+
+func TestHub_Run_DrainsClientsOnShutdown(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, nil, "")
+
+	done := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(done)
+	}()
+
+	// Register several clients.
+	const numClients = 3
+	clients := make([]*Client, numClients)
+	for i := range clients {
+		clients[i] = &Client{
+			hub:  hub,
+			send: make(chan []byte, 256),
+		}
+		hub.register <- clients[i]
+	}
+
+	// Wait for registrations to be processed.
+	time.Sleep(50 * time.Millisecond)
+
+	// Drain initial state messages so send channels are not full.
+	for _, c := range clients {
+		drainChan(c.send)
+	}
+
+	// Close hub — should drain all clients.
+	hub.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hub.Run() did not exit")
+	}
+
+	// All client send channels should be closed.
+	for i, c := range clients {
+		select {
+		case _, ok := <-c.send:
+			if ok {
+				t.Errorf("client %d: send channel should be closed", i)
+			}
+		default:
+			// Channel may be closed but we hit default; read again to confirm.
+			_, ok := <-c.send
+			if ok {
+				t.Errorf("client %d: send channel should be closed on second read", i)
+			}
+		}
+	}
+
+	hub.mu.RLock()
+	count := len(hub.clients)
+	hub.mu.RUnlock()
+	if count != 0 {
+		t.Fatalf("expected 0 clients after shutdown, got %d", count)
+	}
+}
+
+// ─── 13. TestHub_BroadcastUpdate ──────────────────────────────────────────────
+
+func TestHub_BroadcastUpdate(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	// Add a node so the update has data.
+	now := time.Now()
+	store.AddNode(&Node{
+		ID: "bcast1", PublicKey: "pk-bcast", Hostname: "bcast-node",
+		VirtualIP: "100.64.0.10", Status: NodeStatusActive,
+		RegisteredAt: now, LastSeen: now,
+	})
+
+	hub := NewHub(store, nil, "")
+	defer hub.Close()
+
+	hub.broadcastUpdate()
+
+	// broadcastUpdate should have queued 4 messages (nodes, peers, topology, stats).
+	expectedTypes := map[string]bool{
+		"nodes":    false,
+		"peers":    false,
+		"topology": false,
+		"stats":    false,
+	}
+
+	timeout := time.After(2 * time.Second)
+	for i := 0; i < 4; i++ {
+		select {
+		case msg := <-hub.broadcast:
+			var envelope map[string]interface{}
+			if err := json.Unmarshal(msg, &envelope); err != nil {
+				t.Fatalf("message %d: invalid JSON: %v", i+1, err)
+			}
+			msgType, _ := envelope["type"].(string)
+			if _, ok := expectedTypes[msgType]; !ok {
+				t.Errorf("unexpected message type: %q", msgType)
+			}
+			expectedTypes[msgType] = true
+		case <-timeout:
+			t.Fatalf("timed out waiting for message %d", i+1)
+		}
+	}
+
+	for typ, seen := range expectedTypes {
+		if !seen {
+			t.Errorf("message type %q was not received", typ)
+		}
+	}
+}
+
+// ─── 14. TestHub_BroadcastUpdate_SkipsWhenFull ───────────────────────────────
+
+func TestHub_BroadcastUpdate_SkipsWhenFull(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, nil, "")
+	defer hub.Close()
+
+	// Fill the broadcast channel to capacity (64).
+	for i := 0; i < cap(hub.broadcast); i++ {
+		hub.broadcast <- []byte("filler")
+	}
+
+	// broadcastUpdate should not block even though the channel is full.
+	done := make(chan struct{})
+	go func() {
+		hub.broadcastUpdate()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: broadcastUpdate returned without blocking.
+	case <-time.After(2 * time.Second):
+		t.Fatal("broadcastUpdate blocked when broadcast channel was full")
+	}
+
+	// Drain the channel so the hub can be closed cleanly.
+	for i := 0; i < cap(hub.broadcast); i++ {
+		<-hub.broadcast
+	}
+}
+
+// ─── 15. TestHub_Run_BroadcastToClients ──────────────────────────────────────
+
+func TestHub_Run_BroadcastToClients(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, nil, "")
+
+	runDone := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(runDone)
+	}()
+
+	// Register a client.
+	client := &Client{
+		hub:  hub,
+		send: make(chan []byte, 256),
+	}
+	hub.register <- client
+	time.Sleep(30 * time.Millisecond)
+
+	// Drain initial state messages.
+	for {
+		select {
+		case <-client.send:
+		default:
+			goto done1
+		}
+	}
+done1:
+
+	// Broadcast a message through the hub.
+	testMsg := []byte(`{"type":"test"}`)
+	hub.broadcast <- testMsg
+
+	// Client should receive the message.
+	select {
+	case msg := <-client.send:
+		if string(msg) != string(testMsg) {
+			t.Fatalf("received message %q, want %q", string(msg), string(testMsg))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client did not receive broadcast message")
+	}
+
+	hub.Close()
+	<-runDone
+}
+
+// ─── 16. TestHub_Run_BroadcastSlowClient ─────────────────────────────────────
+
+func TestHub_Run_BroadcastSlowClient(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, nil, "")
+
+	runDone := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(runDone)
+	}()
+
+	// Register a client with a tiny send buffer.
+	client := &Client{
+		hub:  hub,
+		send: make(chan []byte, 1),
+	}
+	hub.register <- client
+	time.Sleep(30 * time.Millisecond)
+
+	// Drain initial state messages.
+	for {
+		select {
+		case <-client.send:
+		default:
+			goto done2
+		}
+	}
+done2:
+
+	// Fill the send channel so the next broadcast can't deliver.
+	client.send <- []byte("blocking-msg")
+
+	// Broadcast another message; the slow client should be evicted.
+	hub.broadcast <- []byte("evict-msg")
+	time.Sleep(50 * time.Millisecond)
+
+	// Client should have been removed from the hub.
+	hub.mu.RLock()
+	_, exists := hub.clients[client]
+	hub.mu.RUnlock()
+	if exists {
+		t.Fatal("slow client should have been removed from hub")
+	}
+
+	hub.Close()
+	<-runDone
+}
+
+// ─── 17. TestHub_ServeWS_Success ─────────────────────────────────────────────
+
+func TestHub_ServeWS_Success(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	// Add a node so the initial state has data.
+	now := time.Now()
+	store.AddNode(&Node{
+		ID: "ws1", PublicKey: "pk-ws", Hostname: "ws-node",
+		VirtualIP: "100.64.0.20", Status: NodeStatusActive,
+		RegisteredAt: now, LastSeen: now,
+	})
+
+	hub := NewHub(store, []string{"*"}, "")
+
+	// Start the hub event loop.
+	go hub.Run()
+
+	// Set up an HTTP server that delegates to ServeWS.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", hub.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	defer hub.Close()
+
+	// Connect with a WebSocket client.
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial WebSocket: %v", err)
+	}
+	defer wsConn.Close()
+
+	// Read messages from the server. We expect the initial state messages
+	// (nodes, peers, topology, stats).
+	drainInitialState(t, wsConn)
+}
+
+// ─── 18. TestHub_ServeWS_Unauthorized ────────────────────────────────────────
+
+func TestHub_ServeWS_Unauthorized(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, []string{"*"}, "my-secret")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", hub.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	defer hub.Close()
+
+	// Try to connect without a token — should fail with 401.
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected error dialing without token")
+	}
+	if resp != nil && resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", resp.StatusCode)
+	}
+
+	// Try with the correct token as a query parameter — should succeed.
+	wsURLWithToken := wsURL + "?token=my-secret"
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURLWithToken, nil)
+	if err != nil {
+		t.Fatalf("expected successful connection with valid token, got: %v", err)
+	}
+	wsConn.Close()
+
+	// Try with the correct token via Authorization header.
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer my-secret")
+	wsConn2, _, err := websocket.DefaultDialer.Dial(wsURL, hdr)
+	if err != nil {
+		t.Fatalf("expected successful connection with Bearer token, got: %v", err)
+	}
+	wsConn2.Close()
+
+	// Try with a wrong token.
+	wsURLBadToken := wsURL + "?token=wrong-secret"
+	_, resp3, err := websocket.DefaultDialer.Dial(wsURLBadToken, nil)
+	if err == nil {
+		t.Fatal("expected error dialing with wrong token")
+	}
+	if resp3 != nil && resp3.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected status 401 for wrong token, got %d", resp3.StatusCode)
+	}
+}
+
+// ─── 19. TestHub_ServeWS_ForbiddenOrigin ─────────────────────────────────────
+
+func TestHub_ServeWS_ForbiddenOrigin(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, []string{"http://trusted.example.com"}, "")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", hub.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	defer hub.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+
+	// Dial with a disallowed origin.
+	hdr := http.Header{}
+	hdr.Set("Origin", "http://evil.example.com")
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, hdr)
+	if err == nil {
+		t.Fatal("expected error dialing with forbidden origin")
+	}
+	if resp != nil && resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected status 403, got %d", resp.StatusCode)
+	}
+}
+
+// ─── 20. TestHub_ServeWS_HubShuttingDown ─────────────────────────────────────
+
+func TestHub_ServeWS_HubShuttingDown(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, []string{"*"}, "")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", hub.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Close the hub before trying to connect.
+	hub.Close()
+
+	// Attempting to connect should fail or immediately close because the hub's
+	// done channel is closed. The upgrade itself succeeds, but ServeWS closes
+	// the connection via the <-h.done branch. The client should observe an error
+	// either on dial or on the first read.
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		// Dial itself failed — this is acceptable.
+		return
+	}
+	defer wsConn.Close()
+
+	// If dial succeeded, the server should close the connection immediately.
+	// A subsequent read should fail.
+	wsConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err = wsConn.ReadMessage()
+	if err == nil {
+		t.Fatal("expected error reading from a hub that is shut down")
+	}
+}
+
+// ─── 21. TestClient_ReadPump_UnregistersOnClose ─────────────────────────────
+
+func TestClient_ReadPump_UnregistersOnClose(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, []string{"*"}, "")
+
+	runDone := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(runDone)
+	}()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", hub.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	// Wait for the client to be registered.
+	time.Sleep(50 * time.Millisecond)
+
+	hub.mu.RLock()
+	initialCount := len(hub.clients)
+	hub.mu.RUnlock()
+	if initialCount != 1 {
+		t.Fatalf("expected 1 client, got %d", initialCount)
+	}
+
+	// Close the client connection — readPump should detect it and unregister.
+	wsConn.Close()
+
+	// Wait for readPump to unregister the client.
+	time.Sleep(100 * time.Millisecond)
+
+	hub.mu.RLock()
+	finalCount := len(hub.clients)
+	hub.mu.RUnlock()
+	if finalCount != 0 {
+		t.Fatalf("expected 0 clients after disconnect, got %d", finalCount)
+	}
+
+	hub.Close()
+	<-runDone
+}
+
+// ─── 22. TestClient_WritePump_SendsMessages ─────────────────────────────────
+
+func TestClient_WritePump_SendsMessages(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, []string{"*"}, "")
+
+	runDone := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(runDone)
+	}()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", hub.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer wsConn.Close()
+
+	// Read and discard the initial state messages.
+	drainInitialState(t, wsConn)
+
+	// Send a broadcast through the hub.
+	testPayload := `{"type":"custom-broadcast"}`
+	hub.broadcast <- []byte(testPayload)
+
+	// The client should receive the broadcast.
+	wsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, msg, err := wsConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("reading broadcast: %v", err)
+	}
+	if string(msg) != testPayload {
+		t.Errorf("received %q, want %q", string(msg), testPayload)
+	}
+
+	hub.Close()
+	<-runDone
+}
+
+// ─── 23. TestClient_WritePump_ExitsOnSendClose ──────────────────────────────
+
+func TestClient_WritePump_ExitsOnSendClose(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, []string{"*"}, "")
+
+	runDone := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(runDone)
+	}()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", hub.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer wsConn.Close()
+
+	// Wait for client to be registered.
+	time.Sleep(50 * time.Millisecond)
+
+	// Snapshot the client so we can close its send channel.
+	hub.mu.RLock()
+	var client *Client
+	for c := range hub.clients {
+		client = c
+		break
+	}
+	hub.mu.RUnlock()
+
+	if client == nil {
+		t.Fatal("no client found in hub")
+	}
+
+	// Unregister the client via the unregister channel to close the send channel.
+	hub.unregister <- client
+	time.Sleep(50 * time.Millisecond)
+
+	// The writePump goroutine should have exited and sent a CloseMessage.
+	// The WebSocket connection should be closed on the server side.
+	// Read messages until we get an error (connection closed).
+	wsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	gotError := false
+	for {
+		_, _, err = wsConn.ReadMessage()
+		if err != nil {
+			gotError = true
+			break
+		}
+	}
+	if !gotError {
+		t.Fatal("expected error after writePump closes the connection")
+	}
+
+	hub.Close()
+	<-runDone
+}
+
+// ─── 24. TestClient_ReadPump_ReadsMessages ───────────────────────────────────
+
+func TestClient_ReadPump_ReadsMessages(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, []string{"*"}, "")
+
+	runDone := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(runDone)
+	}()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", hub.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer wsConn.Close()
+
+	// Send a few messages from the client. The readPump should consume them
+	// without errors. We verify the connection stays alive.
+	for i := 0; i < 3; i++ {
+		if err := wsConn.WriteMessage(websocket.TextMessage, []byte("hello")); err != nil {
+			t.Fatalf("write message %d: %v", i, err)
+		}
+	}
+
+	// Read the initial state messages to confirm the connection is still alive.
+	drainInitialState(t, wsConn)
+
+	hub.Close()
+	<-runDone
+}
+
+// ─── 25. TestClient_WritePump_BatchedMessages ───────────────────────────────
+
+func TestClient_WritePump_BatchedMessages(t *testing.T) {
+	store := newTestStore(t)
+	defer store.StopGC()
+
+	hub := NewHub(store, []string{"*"}, "")
+
+	runDone := make(chan struct{})
+	go func() {
+		hub.Run()
+		close(runDone)
+	}()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", hub.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer wsConn.Close()
+
+	// Wait for client to be registered and drain initial state.
+	time.Sleep(50 * time.Millisecond)
+	drainInitialState(t, wsConn)
+
+	// Send two broadcasts in quick succession. writePump may batch them
+	// into a single WebSocket frame (separated by newlines) or deliver
+	// them as separate frames depending on timing.
+	msg1 := []byte(`{"type":"batch1"}`)
+	msg2 := []byte(`{"type":"batch2"}`)
+	hub.broadcast <- msg1
+	hub.broadcast <- msg2
+
+	// Read messages until we've seen both batch1 and batch2, or time out.
+	wsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var allReceived string
+	for {
+		_, received, err := wsConn.ReadMessage()
+		if err != nil {
+			break
+		}
+		allReceived += string(received) + "\n"
+		if strings.Contains(allReceived, "batch1") && strings.Contains(allReceived, "batch2") {
+			break
+		}
+	}
+
+	if !strings.Contains(allReceived, "batch1") {
+		t.Errorf("expected 'batch1' in received data, got %q", allReceived)
+	}
+	if !strings.Contains(allReceived, "batch2") {
+		t.Errorf("expected 'batch2' in received data, got %q", allReceived)
+	}
+
+	hub.Close()
+	<-runDone
+}
+
+// drainChan drains all pending values from a byte channel without blocking.
+func drainChan(ch chan []byte) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
+}
+
+// drainInitialState reads WebSocket frames until all 4 initial message types
+// (nodes, peers, topology, stats) have been received. It handles the case
+// where writePump batches multiple messages into a single frame (separated by
+// newlines). After draining, the read deadline is cleared.
+func drainInitialState(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	seen := map[string]bool{"nodes": false, "peers": false, "topology": false, "stats": false}
+	for {
+		done := true
+		for _, v := range seen {
+			if !v {
+				done = false
+				break
+			}
+		}
+		if done {
+			break
+		}
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			// Timeout or connection closed before all types seen.
+			var missing []string
+			for k, v := range seen {
+				if !v {
+					missing = append(missing, k)
+				}
+			}
+			t.Fatalf("error reading initial state (missing: %v): %v", missing, err)
+		}
+		// Handle batched messages (multiple JSON objects separated by newlines).
+		for _, part := range strings.Split(string(msg), "\n") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			var env map[string]interface{}
+			if json.Unmarshal([]byte(part), &env) == nil {
+				if typ, ok := env["type"].(string); ok {
+					seen[typ] = true
+				}
+			}
+		}
+	}
+	conn.SetReadDeadline(time.Time{}) // clear deadline
 }
