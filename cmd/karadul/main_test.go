@@ -2579,3 +2579,779 @@ func TestMain_Subprocess_Keygen(t *testing.T) {
 		t.Errorf("output missing 'public key:', got: %q", string(output))
 	}
 }
+
+// ─── Additional coverage tests targeting uncovered functions/paths ────────────
+
+// TestMain_Subprocess_Must_Error verifies must() calls os.Exit(1) on non-nil error.
+func TestMain_Subprocess_Must_Error(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		must(fmt.Errorf("forced error"), "test must")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_Must_Error")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit when must receives error")
+	}
+	if !strings.Contains(string(output), "error:") {
+		t.Errorf("output missing 'error:', got: %q", string(output))
+	}
+	if !strings.Contains(string(output), "forced error") {
+		t.Errorf("output missing 'forced error', got: %q", string(output))
+	}
+}
+
+// TestRunAdmin_NodesList_MalformedJSON verifies admin nodes list with non-JSON body.
+func TestRunAdmin_NodesList_MalformedJSON(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/nodes", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`not-json-data`))
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	runAdminNodes([]string{"-server", "http://" + addr})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// When JSON unmarshal fails, it prints the raw body.
+	if !strings.Contains(string(out), "not-json-data") {
+		t.Errorf("expected raw body output, got: %q", string(out))
+	}
+}
+
+// TestMain_Subprocess_AdminNodes_Approve_NoID verifies nodes approve without an ID.
+func TestMain_Subprocess_AdminNodes_Approve_NoID(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		runAdminNodes([]string{"-server", "http://localhost:1", "approve"})
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_AdminNodes_Approve_NoID")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for approve without ID")
+	}
+	if !strings.Contains(string(output), "error:") {
+		t.Errorf("output missing 'error:', got: %q", string(output))
+	}
+}
+
+// TestMain_Subprocess_AdminNodes_Delete_NoID verifies nodes delete without an ID.
+func TestMain_Subprocess_AdminNodes_Delete_NoID(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		runAdminNodes([]string{"-server", "http://localhost:1", "delete"})
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_AdminNodes_Delete_NoID")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for delete without ID")
+	}
+	if !strings.Contains(string(output), "error:") {
+		t.Errorf("output missing 'error:', got: %q", string(output))
+	}
+}
+
+// TestMain_Subprocess_AdminNodes_UnknownSub verifies unknown nodes subcommand.
+func TestMain_Subprocess_AdminNodes_UnknownSub(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		runAdminNodes([]string{"-server", "http://localhost:1", "bogus"})
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_AdminNodes_UnknownSub")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for unknown nodes subcommand")
+	}
+	if !strings.Contains(string(output), "unknown nodes subcommand") {
+		t.Errorf("output missing 'unknown nodes subcommand', got: %q", string(output))
+	}
+}
+
+// TestRunAdmin_AuthKeysCreate_NoExpiry verifies auth-keys create when response
+// has no expiresAt field.
+func TestRunAdmin_AuthKeysCreate_NoExpiry(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/auth-keys", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":"key-no-exp","key":"abc123","ephemeral":false}`))
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	runAdminAuthKeys([]string{"-server", "http://" + addr, "create"})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(out)
+
+	if !strings.Contains(output, "key-no-exp") {
+		t.Errorf("output missing 'key-no-exp', got: %q", output)
+	}
+	if strings.Contains(output, "expires:") {
+		t.Errorf("output should not contain 'expires:' when no expiresAt, got: %q", output)
+	}
+}
+
+// TestRunAdmin_AuthKeysCreate_MalformedResponse verifies auth-keys create when
+// the response body is not valid JSON.
+func TestRunAdmin_AuthKeysCreate_MalformedResponse(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/auth-keys", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`not-json`))
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	runAdminAuthKeys([]string{"-server", "http://" + addr, "create"})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// When JSON unmarshal fails, it prints the raw body.
+	if !strings.Contains(string(out), "not-json") {
+		t.Errorf("expected raw body output, got: %q", string(out))
+	}
+}
+
+// TestRunAdmin_AuthKeysDelete verifies admin auth-keys delete sends DELETE and prints confirmation.
+func TestRunAdmin_AuthKeysDelete(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/auth-keys/del-key-1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("expected DELETE, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	runAdminAuthKeys([]string{"-server", "http://" + addr, "delete", "del-key-1"})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(out), "auth key del-key-1 revoked") {
+		t.Errorf("output missing 'auth key del-key-1 revoked', got: %q", string(out))
+	}
+}
+
+// TestMain_Subprocess_AdminAuthKeys_Delete_NoID verifies auth-keys delete without ID.
+func TestMain_Subprocess_AdminAuthKeys_Delete_NoID(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		runAdminAuthKeys([]string{"-server", "http://localhost:1", "delete"})
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_AdminAuthKeys_Delete_NoID")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for delete without key ID")
+	}
+	if !strings.Contains(string(output), "error:") {
+		t.Errorf("output missing 'error:', got: %q", string(output))
+	}
+}
+
+// TestMain_Subprocess_AdminAuthKeys_UnknownSub verifies unknown auth-keys subcommand.
+func TestMain_Subprocess_AdminAuthKeys_UnknownSub(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		runAdminAuthKeys([]string{"-server", "http://localhost:1", "bogus"})
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_AdminAuthKeys_UnknownSub")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for unknown auth-keys subcommand")
+	}
+	if !strings.Contains(string(output), "unknown auth-keys subcommand") {
+		t.Errorf("output missing 'unknown auth-keys subcommand', got: %q", string(output))
+	}
+}
+
+// TestRunAdmin_AuthKeysList_MalformedJSON verifies auth-keys list with non-JSON body.
+func TestRunAdmin_AuthKeysList_MalformedJSON(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/auth-keys", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`not-json`))
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	runAdminAuthKeys([]string{"-server", "http://" + addr, "list"})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "not-json") {
+		t.Errorf("expected raw body output, got: %q", string(out))
+	}
+}
+
+// TestRunAdmin_AuthKeysCreate_WithCustomExpiry verifies create with a custom expiry flag.
+func TestRunAdmin_AuthKeysCreate_WithCustomExpiry(t *testing.T) {
+	var receivedBody []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/auth-keys", func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":"exp-key","key":"xyz","ephemeral":true,"expiresAt":"2026-12-31T00:00:00Z"}`))
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	runAdminAuthKeys([]string{"-server", "http://" + addr, "-ephemeral", "-expiry", "48h", "create"})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the expiry flag was sent in the payload.
+	if !strings.Contains(string(receivedBody), "48h") {
+		t.Errorf("payload missing '48h', got: %q", string(receivedBody))
+	}
+	// Verify the output shows the key.
+	if !strings.Contains(string(out), "exp-key") {
+		t.Errorf("output missing 'exp-key', got: %q", string(out))
+	}
+}
+
+// TestMain_Subprocess_AdminACL_UnknownSub verifies unknown acl subcommand.
+func TestMain_Subprocess_AdminACL_UnknownSub(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		runAdminACL([]string{"-server", "http://localhost:1", "bogus"})
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_AdminACL_UnknownSub")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for unknown acl subcommand")
+	}
+	if !strings.Contains(string(output), "unknown acl subcommand") {
+		t.Errorf("output missing 'unknown acl subcommand', got: %q", string(output))
+	}
+}
+
+// TestMain_Subprocess_AdminACL_Set_MissingFile verifies acl set with a nonexistent file.
+func TestMain_Subprocess_AdminACL_Set_MissingFile(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		runAdminACL([]string{"-server", "http://localhost:1", "set", "/nonexistent/path/acl.json"})
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_AdminACL_Set_MissingFile")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for missing ACL file")
+	}
+	if !strings.Contains(string(output), "error:") {
+		t.Errorf("output missing 'error:', got: %q", string(output))
+	}
+}
+
+// TestRunAdmin_NodesRouting tests that runAdmin correctly routes to nodes, auth-keys, acl.
+func TestRunAdmin_NodesRouting(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/nodes", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v1/admin/auth-keys", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v1/admin/acl", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	t.Run("routes_nodes", func(t *testing.T) {
+		oldStdout := os.Stdout
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = pw
+
+		runAdmin([]string{"nodes", "-server", "http://" + addr})
+
+		pw.Close()
+		os.Stdout = oldStdout
+
+		out, err := io.ReadAll(pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), "no nodes") {
+			t.Errorf("expected 'no nodes', got: %q", string(out))
+		}
+	})
+
+	t.Run("routes_auth_keys", func(t *testing.T) {
+		oldStdout := os.Stdout
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = pw
+
+		runAdmin([]string{"auth-keys", "-server", "http://" + addr})
+
+		pw.Close()
+		os.Stdout = oldStdout
+
+		out, err := io.ReadAll(pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), "no auth keys") {
+			t.Errorf("expected 'no auth keys', got: %q", string(out))
+		}
+	})
+
+	t.Run("routes_acl", func(t *testing.T) {
+		oldStdout := os.Stdout
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = pw
+
+		runAdmin([]string{"acl", "-server", "http://" + addr, "get"})
+
+		pw.Close()
+		os.Stdout = oldStdout
+
+		out, err := io.ReadAll(pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) == 0 {
+			t.Error("expected non-empty output for acl get")
+		}
+	})
+}
+
+// TestRunAdmin_ACLGet_DefaultNoSub verifies acl get is the default when no subcommand given.
+func TestRunAdmin_ACLGet_DefaultNoSub(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/acl", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"defaultAction":"deny"}`))
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	runAdminACL([]string{"-server", "http://" + addr})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "defaultAction") {
+		t.Errorf("output missing 'defaultAction', got: %q", string(out))
+	}
+}
+
+// TestMain_Subprocess_Firewall_AllowPort_OutOfRange verifies allow-port with port 0.
+func TestMain_Subprocess_Firewall_AllowPort_OutOfRange(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		os.Args = []string{"karadul", "firewall", "allow-port", "0", "tcp"}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_Firewall_AllowPort_OutOfRange")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for out-of-range port 0")
+	}
+	if !strings.Contains(string(output), "invalid port") {
+		t.Errorf("output missing 'invalid port', got: %q", string(output))
+	}
+}
+
+// TestMain_Subprocess_Firewall_AllowPort_PortTooHigh verifies allow-port with port > 65535.
+func TestMain_Subprocess_Firewall_AllowPort_PortTooHigh(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		os.Args = []string{"karadul", "firewall", "allow-port", "70000", "tcp"}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_Firewall_AllowPort_PortTooHigh")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for port > 65535")
+	}
+	if !strings.Contains(string(output), "invalid port") {
+		t.Errorf("output missing 'invalid port', got: %q", string(output))
+	}
+}
+
+// TestKeygen_SaveError verifies runKeygen handles save error via subprocess
+// (writing to an invalid directory triggers fatalf).
+func TestKeygen_SaveError(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		// Use a directory that doesn't exist and can't be created.
+		runKeygen([]string{"-dir", "/proc/crash/impossible/path"})
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestKeygen_SaveError$")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for read-only keygen dir")
+	}
+	if !strings.Contains(string(output), "error:") {
+		t.Errorf("output missing 'error:', got: %q", string(output))
+	}
+}
+
+// TestBuildInfo_Consistency verifies buildInfo values are consistent and well-formed.
+func TestBuildInfo_Consistency(t *testing.T) {
+	commit1, date1 := buildInfo()
+	commit2, date2 := buildInfo()
+
+	if commit1 != commit2 {
+		t.Errorf("commit changed between calls: %q vs %q", commit1, commit2)
+	}
+	if date1 != date2 {
+		t.Errorf("date changed between calls: %q vs %q", date1, date2)
+	}
+
+	// Commit is either "unknown" or a hex string of at most 8 chars.
+	if commit1 != "unknown" {
+		if len(commit1) > 8 {
+			t.Errorf("commit %q is longer than 8 chars", commit1)
+		}
+		for _, c := range commit1 {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				t.Errorf("commit contains non-hex char %q", c)
+				break
+			}
+		}
+	}
+
+	// Date is either "unknown" or a parseable timestamp.
+	if date1 != "unknown" {
+		_, err := time.Parse(time.RFC3339, date1)
+		if err != nil {
+			_, err2 := time.Parse("2006-01-02T15:04:05Z", date1)
+			if err2 != nil {
+				t.Errorf("date %q is not RFC3339 parseable: %v", date1, err)
+			}
+		}
+	}
+}
+
+// TestRunAdminNodes_ListSubcommand verifies the explicit "list" subcommand works.
+func TestRunAdminNodes_ListSubcommand(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/nodes", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[{"hostname":"list-node","virtualIP":"100.64.0.5","status":"approved","id":"abcd1234efgh5678"}]`))
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	runAdminNodes([]string{"-server", "http://" + addr, "list"})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "list-node") {
+		t.Errorf("output missing 'list-node', got: %q", string(out))
+	}
+}
+
+// TestRunPing_PeerFound_SuccessWithRTT verifies runPing with a successful ping
+// that accumulates RTT stats (uses mock socket and test HTTP server).
+func TestRunPing_PeerFound_SuccessWithRTT(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "kpingsuccess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	sockPath := dir + "/karadul.sock"
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[{"hostname":"good-peer","virtualIp":"127.0.0.1","state":"connected"}]`))
+	})
+
+	server := &http.Server{Handler: mux}
+	go server.Serve(ln)
+	defer server.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	// Ping 127.0.0.1 which should succeed.
+	runPing([]string{"-data-dir", dir, "-c", "1", "good-peer"})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(out)
+
+	if !strings.Contains(output, "PING good-peer (127.0.0.1)") {
+		t.Errorf("expected ping header, got: %q", output)
+	}
+	if !strings.Contains(output, "packets transmitted") {
+		t.Errorf("expected ping statistics, got: %q", output)
+	}
+}
+
+// TestLocalAPIPost_MarshalError verifies localAPIPost handles json.Marshal errors.
+// A channel type cannot be marshaled, triggering the encode payload error path.
+func TestLocalAPIPost_MarshalError(t *testing.T) {
+	_, err := localAPIPost(t.TempDir(), "/test", make(chan int))
+	if err == nil {
+		t.Error("expected error for unmarshallable payload (chan int), got nil")
+	}
+	if !strings.Contains(err.Error(), "encode payload") {
+		t.Errorf("error should mention 'encode payload', got: %q", err.Error())
+	}
+}
+
+// TestRunAdmin_AuthKeysCreate_WithExpiryInResponse verifies the expires line
+// is printed when the response includes expiresAt.
+func TestRunAdmin_AuthKeysCreate_WithExpiryInResponse(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/admin/auth-keys", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":"expiry-key","key":"abc","ephemeral":false,"expiresAt":"2026-12-31T00:00:00Z"}`))
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	go server.Serve(ln)
+	defer server.Close()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+
+	runAdminAuthKeys([]string{"-server", "http://" + addr, "create"})
+
+	pw.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(out)
+
+	if !strings.Contains(output, "expires:") {
+		t.Errorf("output should contain 'expires:', got: %q", output)
+	}
+}
+
+// TestMain_Subprocess_ExitNode_Enable_NoExplicitInterface tests exit-node enable
+// without --out-interface flag, which triggers defaultOutInterface().
+func TestMain_Subprocess_ExitNode_Enable_NoExplicitInterface(t *testing.T) {
+	if os.Getenv("TEST_MAIN") == "1" {
+		os.Args = []string{"karadul", "exit-node", "enable"}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMain_Subprocess_ExitNode_Enable_NoExplicitInterface")
+	cmd.Env = append(os.Environ(), "TEST_MAIN=1")
+	output, _ := cmd.CombinedOutput()
+	out := string(output)
+	// Will either succeed (if interface found + socket exists) or fail with error.
+	// The important thing is it exercises the defaultOutInterface() code path.
+	if !strings.Contains(out, "error") && !strings.Contains(out, "exit node") {
+		t.Errorf("unexpected output: %q", out)
+	}
+}

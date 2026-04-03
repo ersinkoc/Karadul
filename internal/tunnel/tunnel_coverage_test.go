@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -679,5 +680,172 @@ func TestDarwinTUN_Read_OneByteBuffer(t *testing.T) {
 	}
 	if buf[0] != payload[0] {
 		t.Errorf("byte 0: got 0x%02x, want 0x%02x", buf[0], payload[0])
+	}
+}
+
+// ─── SetMTU via fake ifconfig ────────────────────────────────────────────────
+
+func setupFakeIfconfig(t *testing.T) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	fake := tmpDir + "/ifconfig"
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+}
+
+func TestDarwinTUN_SetMTU_SuccessViaFakeIfconfig(t *testing.T) {
+	setupFakeIfconfig(t)
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	if err := dev.SetMTU(1400); err != nil {
+		t.Fatalf("SetMTU: %v", err)
+	}
+	if dev.MTU() != 1400 {
+		t.Errorf("MTU after SetMTU: got %d, want 1400", dev.MTU())
+	}
+}
+
+// ─── SetAddr via fake ifconfig ───────────────────────────────────────────────
+
+func setupFakeRoute(t *testing.T) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	fake := tmpDir + "/route"
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+}
+
+func TestDarwinTUN_SetAddr_IPv4_SuccessViaFakeIfconfig(t *testing.T) {
+	setupFakeIfconfig(t)
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	if err := dev.SetAddr(net.IPv4(10, 0, 0, 1), 24); err != nil {
+		t.Fatalf("SetAddr IPv4: %v", err)
+	}
+}
+
+func TestDarwinTUN_SetAddr_IPv6_SuccessViaFakeIfconfig(t *testing.T) {
+	setupFakeIfconfig(t)
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	ip := net.ParseIP("fd00::1")
+	if err := dev.SetAddr(ip, 64); err != nil {
+		t.Fatalf("SetAddr IPv6: %v", err)
+	}
+}
+
+// ─── AddRoute via fake route ─────────────────────────────────────────────────
+
+func TestDarwinTUN_AddRoute_IPv4_SuccessViaFakeRoute(t *testing.T) {
+	setupFakeRoute(t)
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	_, dst, err := net.ParseCIDR("10.0.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dev.AddRoute(dst); err != nil {
+		t.Fatalf("AddRoute IPv4: %v", err)
+	}
+}
+
+func TestDarwinTUN_AddRoute_IPv6_SuccessViaFakeRoute(t *testing.T) {
+	setupFakeRoute(t)
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	_, dst, err := net.ParseCIDR("fd00::/64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dev.AddRoute(dst); err != nil {
+		t.Fatalf("AddRoute IPv6: %v", err)
+	}
+}
+
+// ─── SetMTU error message verification ───────────────────────────────────────
+
+func TestDarwinTUN_SetMTU_ErrorMentionsIfconfig(t *testing.T) {
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	err := dev.SetMTU(1500)
+	if err == nil {
+		t.Skip("SetMTU succeeded (ifconfig in PATH)")
+	}
+	if !strings.Contains(err.Error(), "ifconfig") {
+		t.Errorf("error should mention ifconfig: %v", err)
+	}
+}
+
+// ─── SetAddr error message verification ───────────────────────────────────────
+
+func TestDarwinTUN_SetAddr_IPv4_ErrorMentionsIfconfig(t *testing.T) {
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	err := dev.SetAddr(net.IPv4(10, 0, 0, 1), 24)
+	if err == nil {
+		t.Skip("SetAddr succeeded (ifconfig in PATH)")
+	}
+	if !strings.Contains(err.Error(), "ifconfig") {
+		t.Errorf("error should mention ifconfig: %v", err)
+	}
+}
+
+func TestDarwinTUN_SetAddr_IPv6_ErrorMentionsIfconfig(t *testing.T) {
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	err := dev.SetAddr(net.ParseIP("fd00::1"), 64)
+	if err == nil {
+		t.Skip("SetAddr succeeded (ifconfig in PATH)")
+	}
+	if !strings.Contains(err.Error(), "ifconfig") {
+		t.Errorf("error should mention ifconfig: %v", err)
+	}
+}
+
+// ─── AddRoute error message verification ──────────────────────────────────────
+
+func TestDarwinTUN_AddRoute_IPv4_ErrorMentionsRoute(t *testing.T) {
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	_, dst, err := net.ParseCIDR("10.0.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = dev.AddRoute(dst)
+	if err == nil {
+		t.Skip("AddRoute succeeded (route in PATH)")
+	}
+	if !strings.Contains(err.Error(), "route") {
+		t.Errorf("error should mention route: %v", err)
+	}
+}
+
+func TestDarwinTUN_AddRoute_IPv6_ErrorMentionsRoute(t *testing.T) {
+	dev, _ := newDarwinTUNForRead(t)
+	defer dev.Close()
+
+	_, dst, err := net.ParseCIDR("fd00::/64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = dev.AddRoute(dst)
+	if err == nil {
+		t.Skip("AddRoute succeeded (route in PATH)")
+	}
+	if !strings.Contains(err.Error(), "route") {
+		t.Errorf("error should mention route: %v", err)
 	}
 }
