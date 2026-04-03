@@ -355,6 +355,42 @@ if a.cfg.DataDir != "" {          // reads a.cfg without lock
 
 ---
 
+### HIGH-10: Admin Config PUT Can Clear AdminSecret — Disables Auth on Restart
+
+**Category**: Security / Auth Bypass
+**File**: `internal/coordinator/api.go:944-968`
+**Impact**: Admin can permanently disable authentication by submitting empty admin_secret
+
+**Problem**: `PUT /api/v1/admin/config` accepts a config with `admin_secret: ""` and persists it to disk. While the in-memory middleware retains the old secret (captured at registration time), a server restart loads the persisted config, leaving all admin endpoints unprotected.
+
+**Recommendation**: Reject config updates that would clear `AdminSecret` when one is currently set, or preserve the existing secret if omitted from the PUT body.
+
+---
+
+### HIGH-11: Admin CLI Does Not Send Authorization Header
+
+**Category**: Security / Usability
+**File**: `cmd/karadul/cmd_admin.go:200-219`
+**Impact**: All admin CLI commands fail with 401 when admin_secret is configured
+
+**Problem**: The admin CLI commands make HTTP requests to admin endpoints but never set the `Authorization: Bearer <token>` header. If the server has `admin_secret` configured, every admin CLI command silently fails.
+
+**Recommendation**: Add a `--token` or `--admin-secret` flag to admin commands and set the header.
+
+---
+
+### HIGH-12: Store.UpdateNode/DeleteNode Don't Increment Version Counter
+
+**Category**: Correctness / Data Consistency
+**File**: `internal/coordinator/storage.go:245-272`
+**Impact**: Poll mechanism may miss state changes; `Store.Version()` is unreliable
+
+**Problem**: `UpdateNode` and `DeleteNode` call `notify()` and `saveLocked()` but never increment `s.version`. While the poll mechanism uses `UpdatedAt` timestamps rather than `s.version` directly, this creates an inconsistency where `Store.Version()` only reflects some mutations (AddNode, SetACL, GC) but not others (UpdateNode, DeleteNode).
+
+**Recommendation**: Increment `s.version++` in both `UpdateNode` and `DeleteNode` for consistency.
+
+---
+
 ## MEDIUM Issues (Fix Soon)
 
 ### MEDIUM-1: context.Context Stored in Engine Struct
@@ -493,7 +529,7 @@ No `.golangci.yml` found. The CI runs `golangci-lint` with default settings, whi
 | Severity | Count | Description |
 |----------|-------|-------------|
 | CRITICAL | 8     | Auth bypass, key zeroing, data races, info disclosure, replay window bug, path traversal, timing oracle |
-| HIGH     | 9     | Race conditions, missing TLS, DoS vectors, memory leaks |
+| HIGH     | 12    | Race conditions, missing TLS, DoS vectors, memory leaks, admin secret clearance, missing CLI auth, version counter |
 | MEDIUM   | 10    | Context misuse, protocol bugs, timing attacks, permissions |
 | LOW      | 7     | Code quality, style, tech debt |
 
