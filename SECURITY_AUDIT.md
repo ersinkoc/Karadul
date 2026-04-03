@@ -391,6 +391,53 @@ if a.cfg.DataDir != "" {          // reads a.cfg without lock
 
 ---
 
+### HIGH-13: Windows Exit Node — PowerShell Command Injection via outIface
+
+**Category**: Security / Command Injection
+**File**: `internal/node/exitnode_windows.go:19`
+**Impact**: Arbitrary command execution via local API
+
+**Current Code**:
+```go
+psCmd := `
+$iface = Get-NetAdapter -Name "` + outIface + `" -ErrorAction SilentlyContinue
+```
+
+**Problem**: `outIface` is concatenated directly into a PowerShell script string. An attacker who can reach the local API (`/exit-node/enable`) can send `"; Remove-Item -Recurse C:\ -Force; "` as the interface name to execute arbitrary PowerShell commands. While the local API is on a Unix socket, on Windows this is potentially more exposed.
+
+**Recommendation**: Validate the interface name against `^[a-zA-Z0-9._-]+$` before passing to any command.
+
+---
+
+### HIGH-14: Logger With() Creates Shared Writer with Independent Mutex
+
+**Category**: Concurrency / Data Corruption
+**File**: `internal/log/logger.go:84-98`
+**Impact**: Garbled/interleaved log output under concurrent use
+
+**Problem**: `With()` creates a child logger sharing the same `io.Writer` but with a new, independent `sync.Mutex`. The `log()` method makes multiple `fmt.Fprintf` calls for text format (lines 135-143), so a single log line is NOT a single write. Two loggers writing concurrently will interleave mid-line.
+
+**Recommendation**: Share the mutex between parent and child loggers (use `*sync.Mutex` pointer), or buffer each full line into a `bytes.Buffer` before a single `Write` call.
+
+---
+
+### HIGH-15: UnmarshalMsgData Returns Slice Aliasing Input Buffer
+
+**Category**: Correctness / Latent Bug
+**File**: `internal/protocol/messages.go:133`
+**Impact**: Buffer reuse could silently corrupt ciphertext
+
+**Current Code**:
+```go
+m.Ciphertext = b[DataHeaderSize:]
+```
+
+**Problem**: The returned `MsgData.Ciphertext` aliases the original buffer `b`. Currently safe because the UDP read loop copies to a fresh `pkt`, but any future change to the allocation strategy (e.g., buffer pooling) would silently corrupt data.
+
+**Recommendation**: Document the aliasing clearly, or copy the data: `m.Ciphertext = append([]byte{}, b[DataHeaderSize:]...)`
+
+---
+
 ## MEDIUM Issues (Fix Soon)
 
 ### MEDIUM-1: context.Context Stored in Engine Struct
@@ -449,7 +496,25 @@ Widespread use of `map[string]interface{}` for JSON serialization instead of typ
 
 `LoadKeyPair` reads the private key file without checking permissions. If the file is world-readable (0644), the private key is exposed. WireGuard warns if key files have lax permissions.
 
-### MEDIUM-10: Missing WebSocket Message Size Limit on Gorilla Upgrader
+### MEDIUM-10: Session.Encrypt Reads createdAt Without Lock — Data Race
+
+**File**: `internal/node/session.go:71`
+
+After releasing `s.mu.Lock()` at line 69, `s.createdAt` is read at line 71 outside the lock. `Rotate()` writes `s.createdAt` under lock at line 108. This is a data race.
+
+### MEDIUM-11: Peer.Touch() Fires State Change Callback for Wrong Transition
+
+**File**: `internal/mesh/peer.go:102-115`
+
+If `old` state is `PeerConnecting` or `PeerRelayed`, the callback fires claiming transition to `PeerDirect` — but the actual state was NOT changed (only `PeerIdle → PeerDirect` is handled). This produces spurious/incorrect state change notifications.
+
+### MEDIUM-12: macOS DisableExitNode Runs `pfctl -d` Which Disables ALL pf Rules
+
+**File**: `internal/node/exitnode_darwin.go:43`
+
+`pfctl -d` disables the entire pf firewall, not just karadul's NAT rules. If the user had other pf rules active (application firewalls, custom rules), they will all be disabled on exit node teardown.
+
+### MEDIUM-13: Global WebSocket Upgrader Allows Any Origin
 
 **File**: `internal/coordinator/websocket.go:45-49`
 
@@ -529,8 +594,8 @@ No `.golangci.yml` found. The CI runs `golangci-lint` with default settings, whi
 | Severity | Count | Description |
 |----------|-------|-------------|
 | CRITICAL | 8     | Auth bypass, key zeroing, data races, info disclosure, replay window bug, path traversal, timing oracle |
-| HIGH     | 12    | Race conditions, missing TLS, DoS vectors, memory leaks, admin secret clearance, missing CLI auth, version counter |
-| MEDIUM   | 10    | Context misuse, protocol bugs, timing attacks, permissions |
+| HIGH     | 15    | Race conditions, missing TLS, DoS vectors, memory leaks, PowerShell injection, logger interleave, buffer aliasing |
+| MEDIUM   | 13    | Context misuse, protocol bugs, timing attacks, permissions, session race, pfctl overreach |
 | LOW      | 7     | Code quality, style, tech debt |
 
 ---
