@@ -438,6 +438,62 @@ m.Ciphertext = b[DataHeaderSize:]
 
 ---
 
+### HIGH-16: DNS Compression Pointer Cycle — Infinite Recursion DoS
+
+**Category**: Security / DoS
+**File**: `internal/dns/resolver.go:265-297`
+**Impact**: Process crash via stack overflow from a single malicious DNS query
+
+**Problem**: `parseName` recursively follows DNS compression pointers without tracking visited offsets or limiting recursion depth. A malicious DNS packet with a compression pointer cycle (e.g., pointer at offset 0 pointing to offset 0) causes unbounded recursion, overflowing the stack and crashing the process.
+
+**Recommendation**: Add a recursion depth limit:
+```go
+func parseNameDepth(buf []byte, pos int, depth int) (string, int, error) {
+    if depth > 10 {
+        return "", 0, fmt.Errorf("name: compression pointer loop")
+    }
+    // ... use parseNameDepth(buf, ptr, depth+1)
+}
+```
+
+---
+
+### HIGH-17: Windows TUN Passes UTF-16 String Where GUID Struct Expected
+
+**Category**: Correctness / Platform Bug
+**File**: `internal/tunnel/tun_windows.go:169-197`
+**Impact**: Wintun DLL receives garbage GUID — random adapter GUID or crash on Windows
+
+**Problem**: `WintunCreateAdapter` expects its third argument to be a pointer to a `GUID` struct (`LPCGUID`), not a UTF-16 string. The code converts the GUID to a string, then to UTF-16, and passes the string pointer — causing Wintun to interpret string bytes as a binary GUID struct.
+
+**Recommendation**: Pass `uintptr(unsafe.Pointer(g))` where `g` is the `*guid` struct directly.
+
+---
+
+### HIGH-18: Linux Firewall RemovePort Is Broken — ipt() Always Prepends -A
+
+**Category**: Correctness / Firewall
+**File**: `internal/firewall/firewall_linux.go:84-91`
+**Impact**: Port firewall rules can never be removed; rules accumulate indefinitely
+
+**Problem**: `ipt()` always prepends `-A` (append) to its arguments. When `RemovePort` calls `ipt("-D", chainName, ...)`, the actual command becomes `iptables -A -D KARADUL ...` — which tries to *append* a rule containing `-D` as part of the spec. The delete never executes.
+
+**Recommendation**: Have `ipt` accept the action as a parameter, or call `exec.Command` directly in `RemovePort`.
+
+---
+
+### HIGH-19: Relay Client Concurrent Write Race on Pong Response
+
+**Category**: Concurrency / Data Corruption
+**File**: `internal/relay/client.go:217-218`
+**Impact**: Corrupted wire frames from interleaved writes
+
+**Problem**: The read loop directly writes a pong frame to `rw` (`WriteFrame` + `Flush`), while the write goroutine (line 166) also writes to `rw`. `bufio.Writer` is not safe for concurrent writes. Two goroutines writing simultaneously produce corrupted frames.
+
+**Recommendation**: Send pong through the `send` channel like the server does, ensuring single-writer semantics.
+
+---
+
 ## MEDIUM Issues (Fix Soon)
 
 ### MEDIUM-1: context.Context Stored in Engine Struct
@@ -514,7 +570,25 @@ If `old` state is `PeerConnecting` or `PeerRelayed`, the callback fires claiming
 
 `pfctl -d` disables the entire pf firewall, not just karadul's NAT rules. If the user had other pf rules active (application firewalls, custom rules), they will all be disabled on exit node teardown.
 
-### MEDIUM-13: Global WebSocket Upgrader Allows Any Origin
+### MEDIUM-14: Windows TUN No Synchronization on Read/Write with Close
+
+**File**: `internal/tunnel/tun_windows.go:285-340, 514-536`
+
+If `Read`/`Write` is called concurrently with `Close`, the session handle can be zeroed while a Wintun DLL call is in progress, causing undefined behavior or crashes. No mutex protects `t.session`.
+
+### MEDIUM-15: DNS resolv.conf Write Not Atomic (Linux)
+
+**File**: `internal/dns/override_linux.go:27-28`
+
+Write to `/etc/resolv.conf` is not atomic. If the process crashes mid-write or another daemon writes simultaneously, the file is left corrupted, breaking system DNS. Should use write-to-temp + `os.Rename`.
+
+### MEDIUM-16: Windows TUN guidToString Produces Malformed GUID
+
+**File**: `internal/tunnel/tun_windows.go:95-99`
+
+The format string produces 6 groups with 5 hyphens instead of the standard 5 groups with 4 hyphens. The extra hyphen between `Data4[3]` and `Data4[4]` produces an invalid GUID string.
+
+### MEDIUM-17: Global WebSocket Upgrader Allows Any Origin
 
 **File**: `internal/coordinator/websocket.go:45-49`
 
@@ -594,8 +668,8 @@ No `.golangci.yml` found. The CI runs `golangci-lint` with default settings, whi
 | Severity | Count | Description |
 |----------|-------|-------------|
 | CRITICAL | 8     | Auth bypass, key zeroing, data races, info disclosure, replay window bug, path traversal, timing oracle |
-| HIGH     | 15    | Race conditions, missing TLS, DoS vectors, memory leaks, PowerShell injection, logger interleave, buffer aliasing |
-| MEDIUM   | 13    | Context misuse, protocol bugs, timing attacks, permissions, session race, pfctl overreach |
+| HIGH     | 19    | Race conditions, missing TLS, DoS vectors, DNS loop crash, Windows TUN bugs, broken firewall, concurrent writes |
+| MEDIUM   | 17    | Context misuse, protocol bugs, timing attacks, permissions, platform issues, non-atomic writes |
 | LOW      | 7     | Code quality, style, tech debt |
 
 ---
@@ -649,4 +723,4 @@ No `.golangci.yml` found. The CI runs `golangci-lint` with default settings, whi
 
 ---
 
-*Report generated from exhaustive review of all 90+ Go source files across 14 packages.*
+*Report generated from exhaustive review of all 90+ Go source files across 14 packages. Total: 51 issues identified.*
