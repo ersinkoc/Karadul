@@ -3360,7 +3360,9 @@ func TestHandleHandshakeResp_BadNoiseMsg2(t *testing.T) {
 
 	// Send random garbage as msg2 — Noise decryption will fail.
 	fakeMsg2 := make([]byte, 48) // 32 ephemeral + 16 enc payload
-	_, _ = rand.Read(fakeMsg2)
+	for i := range fakeMsg2 {
+		fakeMsg2[i] = byte(i)
+	}
 
 	respMsg := &protocol.MsgHandshakeResp{
 		SenderIndex:   12345,
